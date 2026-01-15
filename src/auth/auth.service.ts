@@ -1,0 +1,81 @@
+import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { UserService } from '../users/users.service';
+import * as bcrypt from 'bcrypt';
+import { SignupDto } from './dto/signup.dto';
+import { LoginDto } from './dto/login.dto';
+import { RolesService } from '../roles/roles.service';
+
+@Injectable()
+export class AuthService {
+  constructor(
+    private usersService: UserService,
+    private jwtService: JwtService,
+    private rolesService: RolesService,
+  ) {}
+
+  async signup(signupDto: SignupDto) {
+    const hashed = await bcrypt.hash(signupDto.password, 10);
+
+    const existingUser = await this.usersService.findByEmail(signupDto.email);
+    if (existingUser) {
+      throw new UnauthorizedException('Email already in use');
+    }
+
+    // default role slug for public signups
+    const defaultRole = await this.rolesService.findBySlug('user');
+
+    return this.usersService.create({
+      email: signupDto.email,
+      password: hashed,
+      firstname: signupDto.firstname,
+      lastname: signupDto.lastname,
+      age: signupDto.age,
+      roleSlug: defaultRole?.slug,
+    });
+  }
+
+  private async generateTokens(user: any) {
+    const roles = [
+      user.role?.slug,
+      ...(user.userRoles || []).map((r) => r.role.slug),
+    ]
+      .filter(Boolean)
+      .map((r) => r.toLowerCase());
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      departmentId: user.department?.id ?? null,
+      roles,
+    };
+
+    const accessToken = this.jwtService.sign(payload, {
+      expiresIn: '15m',
+    });
+
+    const refreshToken = this.jwtService.sign(
+      { sub: user.id },
+      { expiresIn: '1d' },
+    );
+
+    return { accessToken, refreshToken };
+  }
+
+  async login(loginDto: LoginDto) {
+    const user = await this.usersService.findByEmail(loginDto.email);
+    if (!user) throw new UnauthorizedException();
+
+    const isMatch = await bcrypt.compare(loginDto.password, user.password);
+    if (!isMatch) throw new UnauthorizedException();
+
+    return this.generateTokens(user);
+  }
+
+  async refresh(userId: number) {
+    const user = await this.usersService.findOne(userId);
+    if (!user) throw new UnauthorizedException();
+
+    return this.generateTokens(user);
+  }
+}
