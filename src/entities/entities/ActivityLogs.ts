@@ -12,6 +12,9 @@ export class ActivityLogs {
   @Column('character varying', { name: 'username', nullable: true })
   username: string | null;
 
+  @Column('integer', { name: 'company_id', nullable: true })
+  companyId: number | null;
+
   @Column('character varying', { name: 'ipAddress' })
   ipAddress: string;
 

@@ -6,6 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Users } from '../entities/entities/Users';
 import { Departments } from '../entities/entities/Departments';
+import { Companies } from '../entities/entities/Companies';
 import { Repository } from 'typeorm';
 import { RolesService } from '../roles/roles.service';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -15,6 +16,10 @@ import { AuthUser } from '../common/interfaces/auth-user.interface';
 import { UserRoles } from 'src/entities/entities/UserRoles';
 import { ActivityLogsService } from 'src/activity-logs/activity-logs.service';
 import { RequestContext } from 'src/common/interfaces/request-context.interface';
+import {
+  NotificationsGateway,
+  NotificationPayload,
+} from '../notifications/notifications.gateway';
 
 @Injectable()
 export class UserService {
@@ -23,20 +28,63 @@ export class UserService {
     private repo: Repository<Users>,
     @InjectRepository(Departments)
     private departmentRepo: Repository<Departments>,
+    @InjectRepository(Companies)
+    private companyRepo: Repository<Companies>,
     private rolesService: RolesService,
     @InjectRepository(UserRoles)
     private userRolesRepo: Repository<UserRoles>,
     private readonly activityLogsService: ActivityLogsService,
+    private readonly notificationsGateway: NotificationsGateway,
   ) {}
 
   // Normalize requester roles to accept either `roles` array or legacy `role` property
-  private _normalizeRequesterRoles(requester: AuthUser | null) {
+  private _normalizeRequesterRoles(requester: AuthUser | null): string[] {
     console.log('Normalizing roles for requester', requester);
-    const rawRoles = requester
-      ? (requester as any).roles ||
-        ((requester as any).role ? [(requester as any).role] : [])
+    const rawRoles: string[] = requester
+      ? (requester as { roles?: string[]; role?: string }).roles ||
+        ((requester as { role?: string }).role
+          ? [(requester as { role?: string }).role as string]
+          : [])
       : [];
-    return (rawRoles || []).map(normalizeRoleSlug).filter(Boolean);
+    return (rawRoles || [])
+      .map((r) => normalizeRoleSlug(r))
+      .filter((r): r is string => Boolean(r));
+  }
+
+  // Transform user to add computed 'roles' array from userRoles relation
+  private _transformUser(
+    user: Users,
+  ): Users & { roles: { id: number; name: string; slug: string }[] } {
+    const roles: { id: number; name: string; slug: string }[] = (
+      user.userRoles || []
+    )
+      .map((ur) => ({
+        id: ur.role?.id,
+        name: ur.role?.name || '',
+        slug: ur.role?.slug,
+      }))
+      .filter((r): r is { id: number; name: string; slug: string } => !!r.id);
+
+    // Include primary role in roles array if exists
+    if (user.role && !roles.some((r) => r.id === user.role.id)) {
+      roles.unshift({
+        id: user.role.id,
+        name: user.role.name || '',
+        slug: user.role.slug,
+      });
+    }
+
+    return {
+      ...user,
+      roles,
+    };
+  }
+
+  // Transform array of users
+  private _transformUsers(
+    users: Users[],
+  ): (Users & { roles: { id: number; name: string; slug: string }[] })[] {
+    return users.map((u) => this._transformUser(u));
   }
 
   // Create with optional requester to enforce company_admin restrictions
@@ -64,15 +112,32 @@ export class UserService {
       toSave.role = role;
     }
 
-    if (typeof data.departmentId !== 'undefined') {
+    // Handle departmentId - for manager/user roles
+    if (typeof data.departmentId !== 'undefined' && data.departmentId) {
       const dept = await this.departmentRepo.findOne({
         where: { id: data.departmentId },
         relations: ['company'],
       });
       if (!dept) throw new NotFoundException('Department not found');
       toSave.department = dept;
+      // Option C: Auto-set company from department (single source of truth)
+      if (dept.company) {
+        toSave.company = dept.company;
+      }
       // remove raw id so TypeORM update/save doesn't try to set a nonexistent column
       delete (toSave as any).departmentId;
+    }
+
+    // Handle companyId directly - for company_admin users (no department)
+    // This also allows explicit companyId for any role if needed
+    if (typeof data.companyId !== 'undefined' && data.companyId) {
+      const company = await this.companyRepo.findOne({
+        where: { id: data.companyId },
+      });
+      if (!company) throw new NotFoundException('Company not found');
+      toSave.company = company;
+      // remove raw id so TypeORM update/save doesn't try to set a nonexistent column
+      delete (toSave as any).companyId;
     }
 
     // If requester is company_admin, enforce they cannot assign higher roles and ensure department belongs to their company
@@ -89,6 +154,7 @@ export class UserService {
           this.activityLogsService.logForbiddenAccess({
             userId: requester?.id,
             username: requester?.email,
+            companyId: requester?.companyId,
             ipAddress: ctx?.ipAddress || '',
             api: ctx?.api || '',
             method: ctx?.method || '',
@@ -96,10 +162,9 @@ export class UserService {
 
           throw new ForbiddenException('Not allowed to assign this role');
         }
-        // must assign departmentId within same company
-        if (typeof data.departmentId !== 'undefined') {
-          if (!requester.departmentId) {
-            // Log forbidden access attempt
+        // Option C: Validate department belongs to company_admin's company
+        if (typeof data.departmentId !== 'undefined' && data.departmentId) {
+          if (!requester.companyId) {
             this.activityLogsService.logForbiddenAccess({
               userId: requester?.id,
               username: requester?.email,
@@ -107,25 +172,15 @@ export class UserService {
               api: ctx?.api || '',
               method: ctx?.method || '',
             });
-
-            throw new ForbiddenException(
-              'Requester department mapping missing',
-            );
+            throw new ForbiddenException('Requester company mapping missing');
           }
-          const requesterDept = await this.departmentRepo.findOne({
-            where: { id: requester.departmentId },
-            relations: ['company'],
-          });
+
           const dept = await this.departmentRepo.findOne({
             where: { id: data.departmentId },
             relations: ['company'],
           });
-          if (
-            !requesterDept ||
-            !dept ||
-            requesterDept.company?.id !== dept.company?.id
-          ) {
-            // Log forbidden access attempt
+
+          if (!dept || dept.company?.id !== requester.companyId) {
             this.activityLogsService.logForbiddenAccess({
               userId: requester?.id,
               username: requester?.email,
@@ -133,80 +188,107 @@ export class UserService {
               api: ctx?.api || '',
               method: ctx?.method || '',
             });
-
             throw new ForbiddenException(
-              'Not allowed to create user in this company',
+              'Not allowed to create user in this department',
             );
           }
         }
       }
     }
 
-    return this.repo.save(toSave as Users);
+    const savedUser = await this.repo.save(toSave as Users);
+
+    // Emit notification to company users
+    // Option C: Use company from saved user directly (single source of truth)
+    if (requester && toSave.company?.id) {
+      const notification: NotificationPayload = {
+        type: 'user:created',
+        message: `New user "${savedUser.email}" has been created`,
+        data: { id: savedUser.id, email: savedUser.email },
+        performedBy: { id: requester.id, email: requester.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(toSave.company.id, notification);
+    }
+
+    return savedUser;
   }
 
   // requester-aware listing
-  async findAllWithAccess(requester?: AuthUser | null): Promise<Users[]> {
+  async findAllWithAccess(requester?: AuthUser | null) {
     if (!requester) return [];
 
     const requesterRoles = this._normalizeRequesterRoles(requester);
 
+    let users: Users[] = [];
+
     if (requesterRoles.includes('super_admin')) {
-      return this.repo.find({
-        relations: ['role', 'userRoles', 'userRoles.role'],
+      users = await this.repo.find({
+        relations: [
+          'role',
+          'userRoles',
+          'userRoles.role',
+          'department',
+          'department.company',
+          'company',
+        ],
+        order: { id: 'ASC' },
       });
-    }
+    } else if (requesterRoles.includes('company_admin')) {
+      // Option C: Use companyId directly from requester (single source of truth)
+      if (!requester.companyId) return [];
 
-    if (requesterRoles.includes('company_admin')) {
-      if (!requester.departmentId) return [];
-
-      const requesterDept = await this.departmentRepo.findOne({
-        where: { id: requester.departmentId },
-        relations: ['company'],
-      });
-      if (!requesterDept?.company) return [];
-
-      return this.repo
+      users = await this.repo
         .createQueryBuilder('u')
-        .leftJoin('departments', 'd', 'd.id = u.department_id')
         .leftJoinAndSelect('u.role', 'primaryRole')
         .leftJoinAndSelect('u.userRoles', 'ur')
         .leftJoinAndSelect('ur.role', 'extraRole')
-        .where('d.company_id = :companyId', {
-          companyId: requesterDept.company.id,
+        .leftJoinAndSelect('u.department', 'dept')
+        .leftJoinAndSelect('u.company', 'company')
+        .where('u.company_id = :companyId', {
+          companyId: requester.companyId,
         })
+        .orderBy('u.id', 'ASC')
         .getMany();
-    }
+    } else if (requesterRoles.includes('manager')) {
+      if (!requester.departmentId) {
+        console.log(
+          'findAllWithAccess: manager has no departmentId, returning empty',
+        );
+        return [];
+      }
 
-    if (requesterRoles.includes('manager')) {
-      if (!requester.departmentId) return [];
-
-      return this.repo
+      // Manager sees all users in their department (managers and users)
+      users = await this.repo
         .createQueryBuilder('u')
         .leftJoinAndSelect('u.role', 'primaryRole')
-        .leftJoin('u.userRoles', 'ur')
-        .leftJoin('ur.role', 'extraRole')
+        .leftJoinAndSelect('u.userRoles', 'ur')
+        .leftJoinAndSelect('ur.role', 'extraRole')
+        .leftJoinAndSelect('u.department', 'dept')
+        .leftJoinAndSelect('u.company', 'company')
         .where('u.department_id = :deptId', {
           deptId: requester.departmentId,
         })
-        .andWhere(
-          `
-      (
-        LOWER(primaryRole.slug) = :userRole
-        OR LOWER(extraRole.slug) = :userRole
-        OR u.id = :managerId
-      )
-      `,
-          {
-            userRole: 'user',
-            managerId: requester.id,
-          },
-        )
+        .orderBy('u.id', 'ASC')
         .getMany();
+    } else {
+      // plain user: only self
+      users = await this.repo.find({
+        where: { id: requester.id },
+        relations: [
+          'role',
+          'userRoles',
+          'userRoles.role',
+          'department',
+          'department.company',
+          'company',
+        ],
+        order: { id: 'ASC' },
+      });
     }
 
-    // plain user: only self
-    return this.repo.find({ where: { id: requester.id }, relations: ['role'] });
+    // Transform users to add computed 'roles' array
+    return this._transformUsers(users);
   }
 
   async findOneWithAccess(
@@ -220,9 +302,8 @@ export class UserService {
     const requesterRoles = this._normalizeRequesterRoles(requester);
     if (requesterRoles.includes('super_admin')) return target;
     if (requesterRoles.includes('company_admin')) {
-      if (!requester?.departmentId) {
-        console.log('ctx: ', ctx);
-        // Log forbidden access attempt
+      // Option C: Use companyId directly (single source of truth)
+      if (!requester?.companyId) {
         this.activityLogsService.logForbiddenAccess({
           userId: requester?.id,
           username: requester?.email,
@@ -232,38 +313,9 @@ export class UserService {
         });
         throw new ForbiddenException();
       }
-      const requesterDept = await this.departmentRepo.findOne({
-        where: { id: requester.departmentId },
-        relations: ['company'],
-      });
-      if (!requesterDept || !requesterDept.company) {
-        // Log forbidden access attempt
-        this.activityLogsService.logForbiddenAccess({
-          userId: requester?.id,
-          username: requester?.email,
-          ipAddress: ctx?.ipAddress || '',
-          api: ctx?.api || '',
-          method: ctx?.method || '',
-        });
-        throw new ForbiddenException();
-      }
-      const companyId = requesterDept.company.id;
-      if (!target.department?.id) {
-        // Log forbidden access attempt
-        this.activityLogsService.logForbiddenAccess({
-          userId: requester?.id,
-          username: requester?.email,
-          ipAddress: ctx?.ipAddress || '',
-          api: ctx?.api || '',
-          method: ctx?.method || '',
-        });
-        throw new ForbiddenException();
-      }
-      const targetDept = await this.departmentRepo.findOne({
-        where: { id: target.department.id },
-        relations: ['company'],
-      });
-      if (targetDept?.company?.id === companyId) return target;
+
+      // Check if target user belongs to the same company
+      if (target.company?.id === requester.companyId) return target;
 
       // Log forbidden access attempt
       this.activityLogsService.logForbiddenAccess({
@@ -340,18 +392,52 @@ export class UserService {
     throw new ForbiddenException();
   }
 
-  findOne(id: number) {
-    return this.repo.findOne({
+  async findOne(id: number) {
+    const user = await this.repo.findOne({
       where: { id },
-      relations: ['role', 'userRoles', 'userRoles.role', 'department'],
+      relations: [
+        'role',
+        'userRoles',
+        'userRoles.role',
+        'department',
+        'department.company',
+        'company',
+      ],
     });
+    return user ? this._transformUser(user) : null;
   }
 
-  findByEmail(email: string) {
-    return this.repo.findOne({
+  async findByEmail(email: string) {
+    const user = await this.repo.findOne({
       where: { email },
-      relations: ['role', 'userRoles', 'userRoles.role', 'department'],
+      relations: [
+        'role',
+        'userRoles',
+        'userRoles.role',
+        'department',
+        'department.company',
+        'company',
+      ],
     });
+    return user ? this._transformUser(user) : null;
+  }
+
+  // Find user with password for authentication purposes
+  findByIdWithPassword(id: number) {
+    return this.repo
+      .createQueryBuilder('user')
+      .addSelect('user.password')
+      .where('user.id = :id', { id })
+      .getOne();
+  }
+
+  // Verify user's current password
+  async verifyPassword(userId: number, password: string): Promise<boolean> {
+    const user = await this.findByIdWithPassword(userId);
+    if (!user || !user.password) return false;
+
+    const bcrypt = await import('bcrypt');
+    return bcrypt.compare(password, user.password);
   }
 
   async update(
@@ -384,9 +470,14 @@ export class UserService {
       if (typeof data.departmentId !== 'undefined') {
         const dept = await this.departmentRepo.findOne({
           where: { id: data.departmentId },
+          relations: ['company'],
         });
         if (!dept) throw new NotFoundException('Department not found');
         toUpdate.department = dept;
+        // Option C: Auto-set company from department when updating
+        if (dept.company) {
+          toUpdate.company = dept.company;
+        }
         // remove raw id to avoid TypeORM error updating a non-column property
         delete (toUpdate as any).departmentId;
       }
@@ -398,7 +489,24 @@ export class UserService {
       }
 
       await this.repo.update(id, toUpdate);
-      return this.findOne(id);
+      const updatedUser = await this.findOne(id);
+
+      // Option C: Emit notification using user.company directly (single source of truth)
+      // Skip notification if user is updating their own profile (self-update)
+      const isSelfUpdate = requester.id === id;
+      const companyId = updatedUser?.company?.id || existing.company?.id;
+      if (companyId && !isSelfUpdate) {
+        const notification: NotificationPayload = {
+          type: 'user:updated',
+          message: `User "${updatedUser?.email}" has been updated`,
+          data: { id: updatedUser?.id, email: updatedUser?.email },
+          performedBy: { id: requester.id, email: requester.email },
+          timestamp: new Date().toISOString(),
+        };
+        this.notificationsGateway.emitToCompany(companyId, notification);
+      }
+
+      return updatedUser;
     }
 
     // Log forbidden access attempt
@@ -413,8 +521,28 @@ export class UserService {
     throw new ForbiddenException();
   }
 
-  delete(id: number) {
-    return this.repo.delete(id);
+  async delete(id: number, performer?: AuthUser) {
+    // Get user before deleting to know their company
+    const user = await this.findOne(id);
+    // Option C: Use user.company directly (single source of truth)
+    const companyId = user?.company?.id;
+    const userEmail = user?.email;
+
+    const result = await this.repo.delete(id);
+
+    // Emit notification to company users
+    if (companyId && performer) {
+      const notification: NotificationPayload = {
+        type: 'user:deleted',
+        message: `User "${userEmail}" has been deleted`,
+        data: { id, email: userEmail },
+        performedBy: { id: performer.id, email: performer.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(companyId, notification);
+    }
+
+    return result;
   }
 
   async assignSecondaryRoles(
@@ -445,21 +573,34 @@ export class UserService {
       throw new ForbiddenException('Not allowed to assign roles');
     }
 
-    // company_admin cannot assign super_admin
-    if (
-      requesterRoles.includes('company_admin') &&
-      roleSlugs.some((r) => normalizeRoleSlug(r) === 'super_admin')
-    ) {
-      // Log forbidden access attempt
-      this.activityLogsService.logForbiddenAccess({
+    // super_admin cannot be assigned as secondary role by anyone
+    if (roleSlugs.some((r: string) => normalizeRoleSlug(r) === 'super_admin')) {
+      await this.activityLogsService.logForbiddenAccess({
         userId: requester?.id,
         username: requester?.email,
+        companyId: requester?.companyId,
         ipAddress: ctx?.ipAddress || '',
         api: ctx?.api || '',
         method: ctx?.method || '',
       });
 
       throw new ForbiddenException('Cannot assign super_admin role');
+    }
+
+    // company_admin cannot assign company_admin as secondary role
+    if (requesterRoles.includes('company_admin')) {
+      if (roleSlugs.some((r: string) => normalizeRoleSlug(r) === 'company_admin')) {
+        await this.activityLogsService.logForbiddenAccess({
+          userId: requester?.id,
+          username: requester?.email,
+          companyId: requester?.companyId,
+          ipAddress: ctx?.ipAddress || '',
+          api: ctx?.api || '',
+          method: ctx?.method || '',
+        });
+
+        throw new ForbiddenException('Cannot assign company_admin role');
+      }
     }
 
     // Resolve roles
@@ -489,7 +630,22 @@ export class UserService {
 
     await this.repo.manager.save(newUserRoles);
 
-    return this.findOne(userId);
+    const updatedUser = await this.findOne(userId);
+
+    // Option C: Emit notification using user.company directly (single source of truth)
+    const companyId = target.company?.id;
+    if (companyId) {
+      const notification: NotificationPayload = {
+        type: 'user:roles_assigned',
+        message: `Roles "${roleSlugs.join(', ')}" assigned to user "${target.email}"`,
+        data: { userId, email: target.email, roles: roleSlugs },
+        performedBy: { id: requester.id, email: requester.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(companyId, notification);
+    }
+
+    return updatedUser;
   }
 
   async removeSecondaryRole(
@@ -505,9 +661,10 @@ export class UserService {
       !requesterRoles.includes('company_admin')
     ) {
       // Log forbidden access attempt
-      this.activityLogsService.logForbiddenAccess({
+      await this.activityLogsService.logForbiddenAccess({
         userId: requester?.id,
         username: requester?.email,
+        companyId: requester?.companyId,
         ipAddress: ctx?.ipAddress || '',
         api: ctx?.api || '',
         method: ctx?.method || '',
@@ -515,6 +672,28 @@ export class UserService {
 
       throw new ForbiddenException();
     }
+
+    // company_admin cannot remove super_admin or company_admin roles
+    if (requesterRoles.includes('company_admin')) {
+      const restrictedRoles: string[] = ['super_admin', 'company_admin'];
+      if (restrictedRoles.includes(normalizeRoleSlug(roleSlug))) {
+        await this.activityLogsService.logForbiddenAccess({
+          userId: requester?.id,
+          username: requester?.email,
+          companyId: requester?.companyId,
+          ipAddress: ctx?.ipAddress || '',
+          api: ctx?.api || '',
+          method: ctx?.method || '',
+        });
+
+        throw new ForbiddenException(
+          'Cannot remove super_admin or company_admin roles',
+        );
+      }
+    }
+
+    const target = await this.findOne(userId);
+    if (!target) throw new NotFoundException('User not found');
 
     const role = await this.rolesService.findBySlug(roleSlug);
     if (!role) throw new NotFoundException('Role not found');
@@ -524,6 +703,21 @@ export class UserService {
       role: { id: role.id },
     });
 
-    return this.findOne(userId);
+    const updatedUser = await this.findOne(userId);
+
+    // Option C: Emit notification using user.company directly (single source of truth)
+    const companyId = target.company?.id;
+    if (companyId) {
+      const notification: NotificationPayload = {
+        type: 'user:role_removed',
+        message: `Role "${roleSlug}" removed from user "${target.email}"`,
+        data: { userId, email: target.email, role: roleSlug },
+        performedBy: { id: requester.id, email: requester.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(companyId, notification);
+    }
+
+    return updatedUser;
   }
 }

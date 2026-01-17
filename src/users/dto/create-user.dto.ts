@@ -35,4 +35,9 @@ export class CreateUserDto {
   @IsOptional()
   @IsNumber()
   departmentId?: number;
+
+  @ApiPropertyOptional({ example: 1 })
+  @IsOptional()
+  @IsNumber()
+  companyId?: number;
 }

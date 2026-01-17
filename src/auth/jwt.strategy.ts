@@ -40,6 +40,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       id: payload.sub,
       sub: payload.sub,
       email: payload.email,
+      companyId: payload.companyId,
       departmentId: payload.departmentId,
       roles: roles.map((r) => String(r).toLowerCase().trim()),
     } as AuthUser;

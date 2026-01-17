@@ -16,6 +16,8 @@ import { Departments } from './entities/entities/Departments';
 import { ActivityLogsModule } from './activity-logs/activity-logs.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RedisModule } from './redis/redis.module';
+import { NotificationsModule } from './notifications/notifications.module';
+// import { WalModule } from './wal/wal.module'; // WAL disabled - wal2json not available on Windows
 
 @Module({
   imports: [
@@ -39,6 +41,8 @@ import { RedisModule } from './redis/redis.module';
       }),
     }),
     RedisModule,
+    NotificationsModule,
+    // WalModule, // WAL disabled - wal2json not available on Windows
     AuthModule,
     UserModule,
     RolesModule,

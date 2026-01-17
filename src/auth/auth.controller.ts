@@ -14,11 +14,11 @@ export class AuthController {
     private jwtService: JwtService,
   ) {}
 
-  @Post('signup')
-  async signup(@Body() body: SignupDto) {
-    const data = await this.authService.signup(body);
-    return ApiResponse.success('User registered successfully', 201, data);
-  }
+  // @Post('signup')
+  // async signup(@Body() body: SignupDto) {
+  //   const data = await this.authService.signup(body);
+  //   return ApiResponse.success('User registered successfully', 201, data);
+  // }
 
   @Post('login')
   @HttpCode(200)

@@ -104,8 +104,8 @@ export class UserController {
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin')
   @Delete('delete/:id')
-  remove(@Param('id') id: number) {
-    const data = this.userService.delete(+id);
+  async remove(@Req() req: RequestWithUser, @Param('id') id: number) {
+    const data = await this.userService.delete(+id, req.user);
     return ApiResponse.success('User deleted successfully', 200, data);
   }
 
@@ -153,12 +153,56 @@ export class UserController {
 
   @UseGuards(AuthGuard('jwt'))
   @Get('profile')
-  getUserData(@Req() req) {
-    const data = req.user;
+  async getUserData(@Req() req: RequestWithUser) {
+    // Fetch fresh user data from database instead of JWT
+    const data = await this.userService.findOne(req.user.id);
     return ApiResponse.success(
       'User profile retrieved successfully',
       200,
       data,
     );
+  }
+
+  // Self-update profile - any authenticated user can update their own profile
+  @UseGuards(AuthGuard('jwt'))
+  @Put('profile')
+  async updateProfile(
+    @Req() req: RequestWithUser,
+    @Body() body: UpdateUserDto & { currentPassword?: string },
+  ) {
+    // Users can only update their own firstname, lastname, and password
+    const allowedFields: Partial<UpdateUserDto> = {};
+    if (body.firstname !== undefined) allowedFields.firstname = body.firstname;
+    if (body.lastname !== undefined) allowedFields.lastname = body.lastname;
+
+    // If password is being changed, verify current password first
+    if (body.password !== undefined) {
+      if (!body.currentPassword) {
+        throw new BadRequestException('Current password is required');
+      }
+
+      const isValid = await this.userService.verifyPassword(
+        req.user.id,
+        body.currentPassword,
+      );
+
+      if (!isValid) {
+        throw new BadRequestException('Current password is incorrect');
+      }
+
+      allowedFields.password = body.password;
+    }
+
+    const data = await this.userService.update(
+      req.user,
+      req.user.id,
+      allowedFields,
+      {
+        ipAddress: req.ip,
+        method: req.method,
+        api: req.originalUrl,
+      },
+    );
+    return ApiResponse.success('Profile updated successfully', 200, data);
   }
 }

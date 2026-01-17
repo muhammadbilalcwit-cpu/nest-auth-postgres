@@ -10,6 +10,7 @@ import {
 import { UserRoles } from './UserRoles';
 import { Departments } from './Departments';
 import { Roles } from './Roles';
+import { Companies } from './Companies';
 
 @Index('users_email_key', ['email'], { unique: true })
 @Index('users_pkey', ['id'], { unique: true })
@@ -67,4 +68,8 @@ export class Users {
   @ManyToOne(() => Roles, (roles) => roles.users)
   @JoinColumn([{ name: 'role_id', referencedColumnName: 'id' }])
   role: Roles;
+
+  @ManyToOne(() => Companies, (companies) => companies.users, { nullable: true })
+  @JoinColumn([{ name: 'company_id', referencedColumnName: 'id' }])
+  company: Companies | null;
 }

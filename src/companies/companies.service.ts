@@ -1,182 +1,255 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Companies } from '../entities/entities/Companies';
 import type Redis from 'ioredis';
+import {
+  NotificationsGateway,
+  NotificationPayload,
+} from '../notifications/notifications.gateway';
+import { AuthUser } from '../common/interfaces/auth-user.interface';
 
 @Injectable()
-export class CompaniesService {
+export class CompaniesService implements OnModuleInit {
+  private readonly CACHE_PREFIX = 'company';
+  private readonly MAX_ID_KEY = 'company:max_id';
+
   constructor(
     @InjectRepository(Companies)
     private repo: Repository<Companies>,
     @Inject('REDIS_CLIENT')
     private readonly redis: Redis,
+    private readonly notificationsGateway: NotificationsGateway,
   ) {}
 
-  // async onModuleInit() {
-  //   try {
-  //     console.log('🔧 Testing Redis connection with ioredis directly...');
+  // ---------------- ON MODULE INIT ----------------
+  // Smart sync: Only fetch new records from DB on server start
+  async onModuleInit() {
+    console.log('CompaniesService: Starting smart cache sync...');
+    await this.smartCacheSync();
+  }
 
-  //     // Test write
-  //     await this.redis.setex('redis:test', 300, 'working');
-  //     console.log('✅ Redis write successful');
+  private async smartCacheSync() {
+    // Step 1: Check if Redis has any data keys (not just max_id)
+    const existingKeys = await this.redis.keys(`${this.CACHE_PREFIX}:*`);
+    const dataKeys = existingKeys.filter((key) => key !== this.MAX_ID_KEY);
+    const redisIsEmpty = dataKeys.length === 0;
 
-  //     // Test read
-  //     const value = await this.redis.get('redis:test');
-  //     console.log('✅ Redis read:', value);
+    // Step 2: Get max ID from Redis (last synced ID)
+    const cachedMaxId = await this.redis.get(this.MAX_ID_KEY);
+    const lastSyncedId = cachedMaxId ? parseInt(cachedMaxId, 10) : 0;
 
-  //     // Test object storage
-  //     await this.redis.setex(
-  //       'test:company:1',
-  //       300,
-  //       JSON.stringify({ id: 1, name: 'Test Co' }),
-  //     );
-  //     console.log('✅ Test company cached in Redis');
-  //   } catch (error) {
-  //     console.error('❌ Redis error:', error);
-  //   }
-  // }
+    // Step 3: Get current max ID from DB (single query)
+    const result: { maxId: number | null } | undefined = await this.repo
+      .createQueryBuilder('c')
+      .select('MAX(c.id)', 'maxId')
+      .getRawOne();
+    const dbMaxId: number = result?.maxId || 0;
+
+    console.log(
+      `CompaniesService: Redis data keys: ${dataKeys.length}, Redis max ID: ${lastSyncedId}, DB max ID: ${dbMaxId}`,
+    );
+
+    // Step 4: Full sync if Redis is empty, otherwise incremental sync
+    if (redisIsEmpty && dbMaxId > 0) {
+      // Redis is empty - do full sync from DB
+      console.log('CompaniesService: Redis is empty, doing full sync from DB');
+      const allRecords = await this.repo.find();
+
+      if (allRecords.length > 0) {
+        await Promise.all(
+          allRecords.map((company) =>
+            this.redis.set(
+              `${this.CACHE_PREFIX}:${company.id}`,
+              JSON.stringify(company),
+            ),
+          ),
+        );
+        await this.redis.set(this.MAX_ID_KEY, dbMaxId.toString());
+        console.log(`CompaniesService: Full sync - cached ${allRecords.length} companies in Redis`);
+      }
+    } else if (dbMaxId > lastSyncedId) {
+      // Incremental sync - only fetch new records
+      const newRecords = await this.repo
+        .createQueryBuilder('c')
+        .where('c.id > :lastId', { lastId: lastSyncedId })
+        .getMany();
+
+      if (newRecords.length > 0) {
+        await Promise.all(
+          newRecords.map((company) =>
+            this.redis.set(
+              `${this.CACHE_PREFIX}:${company.id}`,
+              JSON.stringify(company),
+            ),
+          ),
+        );
+        await this.redis.set(this.MAX_ID_KEY, dbMaxId.toString());
+        console.log(`CompaniesService: Incremental sync - cached ${newRecords.length} new companies`);
+      }
+    } else {
+      console.log('CompaniesService: Redis is up to date, no sync needed');
+    }
+  }
 
   // ---------------- CREATE ----------------
-  async create(data: Partial<Companies>) {
-    // Step 1: Save to DB
+  async create(data: Partial<Companies>, performer?: AuthUser) {
     const company = await this.repo.save(data);
 
-    // Step 2: Cache in Redis
-    const key = `company:${company.id}`;
-    await this.redis.setex(key, 3600, JSON.stringify(company));
-
-    // Step 3: Fetch from Redis to ensure consistency
-    const cached = await this.redis.get(key);
-    return JSON.parse(cached!) as Companies;
-  }
-
-  // ---------------- FIND ALL ----------------
-  async findAll() {
-    // Step 1: Get all company keys from Redis
-    const redisKeys = await this.redis.keys('company:*');
-
-    // Step 2: Check if Redis has any company data
-    if (redisKeys.length === 0) {
-      // Redis is empty, fetch from DB
-      const allCompanies = await this.repo.find();
-
-      // Cache all companies in Redis
-      await Promise.all(
-        allCompanies.map((company) =>
-          this.redis.setex(
-            `company:${company.id}`,
-            3600,
-            JSON.stringify(company),
-          ),
-        ),
-      );
-
-      // Fetch from Redis to ensure consistency
-      const results = await Promise.all(
-        allCompanies.map(async (company) => {
-          const cached = await this.redis.get(`company:${company.id}`);
-          return JSON.parse(cached!) as Companies;
-        }),
-      );
-
-      return results;
-    }
-
-    // Step 3: Redis has some data, extract IDs from keys
-    const cachedCompanyIds = redisKeys.map((key) =>
-      parseInt(key.replace('company:', '')),
+    // Cache in Redis (permanent - no TTL)
+    await this.redis.set(
+      `${this.CACHE_PREFIX}:${company.id}`,
+      JSON.stringify(company),
     );
 
-    // Step 4: Get all company IDs from DB
-    const allCompaniesFromDb = await this.repo.find();
-    const allDbIds = allCompaniesFromDb.map((c) => c.id);
-
-    // Step 5: Find missing companies (in DB but not in Redis)
-    const missingIds = allDbIds.filter((id) => !cachedCompanyIds.includes(id));
-
-    // Step 6: Cache missing companies in Redis
-    if (missingIds.length > 0) {
-      const missingCompanies = allCompaniesFromDb.filter((c) =>
-        missingIds.includes(c.id),
-      );
-
-      await Promise.all(
-        missingCompanies.map((company) =>
-          this.redis.setex(
-            `company:${company.id}`,
-            3600,
-            JSON.stringify(company),
-          ),
-        ),
-      );
+    // Update max ID if this is a new highest
+    const currentMaxId = await this.redis.get(this.MAX_ID_KEY);
+    if (!currentMaxId || company.id > parseInt(currentMaxId, 10)) {
+      await this.redis.set(this.MAX_ID_KEY, company.id.toString());
     }
 
-    // Step 7: Fetch ALL companies from Redis (now all are cached)
-    const finalResults = await Promise.all(
-      allDbIds.map(async (id) => {
-        const cached = await this.redis.get(`company:${id}`);
-        return JSON.parse(cached!) as Companies;
-      }),
-    );
+    console.log(`create: Cached company:${company.id} in Redis`);
 
-    return finalResults;
-  }
-
-  // ---------------- FIND ONE ----------------
-  async findOne(id: number) {
-    const key = `company:${id}`;
-
-    // Step 1: Check if exists in Redis
-    const cached = await this.redis.get(key);
-    if (cached) {
-      // Already in cache, return from Redis
-      return JSON.parse(cached) as Companies;
-    }
-
-    // Step 2: Not in cache, get from DB
-    const company = await this.repo.findOne({ where: { id } });
-
-    // Step 3: Cache in Redis
-    if (company) {
-      await this.redis.setex(key, 3600, JSON.stringify(company));
-
-      // Step 4: Fetch from Redis to ensure consistency
-      const redisCached = await this.redis.get(key);
-      return JSON.parse(redisCached!) as Companies;
+    // Emit notification to company users (for new company, notify that company)
+    if (performer) {
+      const notification: NotificationPayload = {
+        type: 'company:created',
+        message: `New company "${company.name}" has been created`,
+        data: company,
+        performedBy: { id: performer.id, email: performer.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(company.id, notification);
     }
 
     return company;
   }
 
-  // ---------------- UPDATE ----------------
-  async update(id: number, data: Partial<Companies>) {
-    // Step 1: Update in DB
-    await this.repo.update(id, data);
+  // ---------------- FIND ALL ----------------
+  // Returns data ONLY from Redis - no DB fallback
+  async findAll() {
+    // Get all company keys from Redis
+    const redisKeys = await this.redis.keys(`${this.CACHE_PREFIX}:*`);
+    // Filter out the max_id key
+    const companyKeys = redisKeys.filter((key) => key !== this.MAX_ID_KEY);
 
-    // Step 2: Get updated company from DB
+    if (companyKeys.length === 0) {
+      console.log('findAll: No companies in Redis');
+      return [];
+    }
+
+    // Use MGET for better performance (single Redis call)
+    const cachedData = await this.redis.mget(companyKeys);
+    const results = cachedData
+      .filter((data): data is string => data !== null)
+      .map((data) => JSON.parse(data) as Companies)
+      .sort((a, b) => a.id - b.id); // Sort by ID ascending
+
+    console.log(`findAll: Returned ${results.length} companies from Redis`);
+    return results;
+  }
+
+  // ---------------- FIND ALL WITH ACCESS ----------------
+  // Returns companies based on user role
+  async findAllWithAccess(requester: AuthUser) {
+    const allCompanies = await this.findAll();
+
+    // Normalize roles
+    const roles = (requester.roles || []).map((r) =>
+      String(r).toLowerCase().trim(),
+    );
+
+    // super_admin sees all companies
+    if (roles.includes('super_admin')) {
+      return allCompanies;
+    }
+
+    // company_admin sees only their company
+    if (roles.includes('company_admin')) {
+      if (!requester.companyId) {
+        console.log('findAllWithAccess: company_admin has no companyId');
+        return [];
+      }
+      const filtered = allCompanies.filter(
+        (company) => company.id === requester.companyId,
+      );
+      console.log(
+        `findAllWithAccess: company_admin sees ${filtered.length} companies`,
+      );
+      return filtered;
+    }
+
+    // Other roles see no companies
+    return [];
+  }
+
+  // ---------------- FIND ONE ----------------
+  // Returns data ONLY from Redis - no DB fallback
+  async findOne(id: number) {
+    const key = `${this.CACHE_PREFIX}:${id}`;
+
+    const cached = await this.redis.get(key);
+    if (cached) {
+      console.log(`findOne: Returned company ${id} from Redis`);
+      return JSON.parse(cached) as Companies;
+    }
+
+    console.log(`findOne: Company ${id} not found in Redis`);
+    return null;
+  }
+
+  // ---------------- UPDATE ----------------
+  async update(id: number, data: Partial<Companies>, performer?: AuthUser) {
+    await this.repo.update(id, data);
     const company = await this.repo.findOne({ where: { id } });
 
     if (company) {
-      // Step 3: Update cache in Redis
-      const key = `company:${id}`;
-      await this.redis.setex(key, 3600, JSON.stringify(company));
+      // Update Redis cache (permanent - no TTL)
+      await this.redis.set(
+        `${this.CACHE_PREFIX}:${id}`,
+        JSON.stringify(company),
+      );
+      console.log(`update: Updated company:${id} in Redis`);
 
-      // Step 4: Fetch from Redis to ensure consistency
-      const cached = await this.redis.get(key);
-      return JSON.parse(cached!) as Companies;
+      // Emit notification to company users
+      if (performer) {
+        const notification: NotificationPayload = {
+          type: 'company:updated',
+          message: `Company "${company.name}" has been updated`,
+          data: company,
+          performedBy: { id: performer.id, email: performer.email },
+          timestamp: new Date().toISOString(),
+        };
+        this.notificationsGateway.emitToCompany(id, notification);
+      }
     }
 
     return company;
   }
 
   // ---------------- DELETE ----------------
-  async delete(id: number) {
-    // Step 1: Delete from DB
+  async delete(id: number, performer?: AuthUser) {
+    // Get company before deleting
+    const company = await this.repo.findOne({ where: { id } });
+    const companyName = company?.name;
+
     await this.repo.delete(id);
 
-    // Step 2: Remove from Redis cache
-    await this.redis.del(`company:${id}`);
+    // Remove from Redis
+    await this.redis.del(`${this.CACHE_PREFIX}:${id}`);
+    console.log(`delete: Removed company:${id} from Redis`);
+
+    // Emit notification to company users before they disconnect
+    if (performer && company) {
+      const notification: NotificationPayload = {
+        type: 'company:deleted',
+        message: `Company "${companyName}" has been deleted`,
+        data: { id, name: companyName },
+        performedBy: { id: performer.id, email: performer.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(id, notification);
+    }
 
     return { deleted: true };
   }

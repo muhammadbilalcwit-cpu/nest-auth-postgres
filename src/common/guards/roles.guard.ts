@@ -59,6 +59,7 @@ export class RolesGuard implements CanActivate {
       this.activityLogService.logForbiddenAccess({
         userId: user?.id,
         username: user?.email,
+        companyId: user?.companyId,
         ipAddress: request.ip,
         api: request.originalUrl,
         method: request.method,
