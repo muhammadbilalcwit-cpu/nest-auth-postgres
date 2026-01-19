@@ -5,6 +5,7 @@ import * as bcrypt from 'bcrypt';
 import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { RolesService } from '../roles/roles.service';
+import { SessionsService } from '../sessions/sessions.service';
 
 @Injectable()
 export class AuthService {
@@ -12,6 +13,7 @@ export class AuthService {
     private usersService: UserService,
     private jwtService: JwtService,
     private rolesService: RolesService,
+    private sessionsService: SessionsService,
   ) {}
 
   async signup(signupDto: SignupDto) {
@@ -52,7 +54,7 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '15m',
+      expiresIn: '15m', // FOR TESTING: 1 minute (change back to '15m' for production)
     });
 
     const refreshToken = this.jwtService.sign(
@@ -63,20 +65,43 @@ export class AuthService {
     return { accessToken, refreshToken };
   }
 
-  async login(loginDto: LoginDto) {
+  async login(loginDto: LoginDto, ipAddress?: string, userAgent?: string) {
     const user = await this.usersService.findByEmail(loginDto.email);
     if (!user) throw new UnauthorizedException();
 
     const isMatch = await bcrypt.compare(loginDto.password, user.password);
     if (!isMatch) throw new UnauthorizedException();
 
-    return this.generateTokens(user);
+    const tokens = await this.generateTokens(user);
+
+    // Create session in database
+    await this.sessionsService.createSession(
+      user.id,
+      tokens.refreshToken,
+      ipAddress,
+      userAgent,
+    );
+
+    return tokens;
   }
 
-  async refresh(userId: number) {
+  async refresh(userId: number, refreshToken: string) {
+    // Validate session exists and is valid
+    const session = await this.sessionsService.validateSession(
+      userId,
+      refreshToken,
+    );
+    if (!session) {
+      throw new UnauthorizedException('Session expired or invalid');
+    }
+
     const user = await this.usersService.findOne(userId);
     if (!user) throw new UnauthorizedException();
 
     return this.generateTokens(user);
+  }
+
+  async logout(userId: number, refreshToken: string) {
+    await this.sessionsService.invalidateSession(userId, refreshToken);
   }
 }

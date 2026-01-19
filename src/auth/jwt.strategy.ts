@@ -22,26 +22,24 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any): Promise<AuthUser | null> {
-    // Prefer roles embedded in the JWT payload (faster, authoritative for this session)
-    let roles: string[] = Array.isArray(payload.roles) ? payload.roles : [];
+    // ALWAYS fetch fresh roles from DB to handle role updates
+    // This ensures users get new permissions immediately after role changes
+    const dbUser = await this.userService.findOne(payload.sub);
+    if (!dbUser) return null;
 
-    // If the token doesn't include roles, fall back to DB lookup
-    if (!roles || roles.length === 0) {
-      const dbUser = await this.userService.findOne(payload.sub);
-      if (!dbUser) return null;
-      roles = [
-        dbUser.role?.slug,
-        ...(dbUser.userRoles || []).map((r) => r.role.slug),
-      ].filter(Boolean) as string[];
-    }
+    // Get all roles: primary role + additional roles from userRoles
+    const roles = [
+      dbUser.role?.slug,
+      ...(dbUser.userRoles || []).map((r) => r.role.slug),
+    ].filter(Boolean) as string[];
 
     // Normalize and return a lightweight AuthUser for guards/controllers
     const normalized = {
       id: payload.sub,
       sub: payload.sub,
       email: payload.email,
-      companyId: payload.companyId,
-      departmentId: payload.departmentId,
+      companyId: dbUser.company?.id ?? payload.companyId,
+      departmentId: dbUser.department?.id ?? payload.departmentId,
       roles: roles.map((r) => String(r).toLowerCase().trim()),
     } as AuthUser;
 

@@ -7,10 +7,11 @@ import {
   OneToMany,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { Sessions } from './Sessions';
 import { UserRoles } from './UserRoles';
+import { Companies } from './Companies';
 import { Departments } from './Departments';
 import { Roles } from './Roles';
-import { Companies } from './Companies';
 
 @Index('users_email_key', ['email'], { unique: true })
 @Index('users_pkey', ['id'], { unique: true })
@@ -58,8 +59,15 @@ export class Users {
   @Column('timestamp without time zone', { name: 'deleted_at', nullable: true })
   deletedAt: Date | null;
 
+  @OneToMany(() => Sessions, (sessions) => sessions.user)
+  sessions: Sessions[];
+
   @OneToMany(() => UserRoles, (userRoles) => userRoles.user)
   userRoles: UserRoles[];
+
+  @ManyToOne(() => Companies, (companies) => companies.users)
+  @JoinColumn([{ name: 'company_id', referencedColumnName: 'id' }])
+  company: Companies;
 
   @ManyToOne(() => Departments, (departments) => departments.users)
   @JoinColumn([{ name: 'department_id', referencedColumnName: 'id' }])
@@ -68,8 +76,4 @@ export class Users {
   @ManyToOne(() => Roles, (roles) => roles.users)
   @JoinColumn([{ name: 'role_id', referencedColumnName: 'id' }])
   role: Roles;
-
-  @ManyToOne(() => Companies, (companies) => companies.users, { nullable: true })
-  @JoinColumn([{ name: 'company_id', referencedColumnName: 'id' }])
-  company: Companies | null;
 }

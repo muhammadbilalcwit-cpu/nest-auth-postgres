@@ -258,7 +258,8 @@ export class UserService {
         return [];
       }
 
-      // Manager sees all users in their department (managers and users)
+      // Manager sees all users in their department EXCEPT themselves
+      // Enterprise pattern: Manager manages their team, not themselves
       users = await this.repo
         .createQueryBuilder('u')
         .leftJoinAndSelect('u.role', 'primaryRole')
@@ -268,6 +269,9 @@ export class UserService {
         .leftJoinAndSelect('u.company', 'company')
         .where('u.department_id = :deptId', {
           deptId: requester.departmentId,
+        })
+        .andWhere('u.id != :requesterId', {
+          requesterId: requester.id,
         })
         .orderBy('u.id', 'ASC')
         .getMany();

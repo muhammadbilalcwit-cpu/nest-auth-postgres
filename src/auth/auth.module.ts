@@ -6,6 +6,7 @@ import { PassportModule } from '@nestjs/passport';
 import { JwtModule } from '@nestjs/jwt';
 import { JwtStrategy } from './jwt.strategy';
 import { RolesModule } from '../roles/roles.module';
+import { SessionsModule } from '../sessions/sessions.module';
 
 @Global()
 @Module({
@@ -18,6 +19,8 @@ import { RolesModule } from '../roles/roles.module';
     }),
     // RolesModule used to lookup default role by slug
     RolesModule,
+    // SessionsModule for session tracking
+    SessionsModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

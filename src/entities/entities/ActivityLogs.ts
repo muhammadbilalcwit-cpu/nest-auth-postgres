@@ -12,9 +12,6 @@ export class ActivityLogs {
   @Column('character varying', { name: 'username', nullable: true })
   username: string | null;
 
-  @Column('integer', { name: 'company_id', nullable: true })
-  companyId: number | null;
-
   @Column('character varying', { name: 'ipAddress' })
   ipAddress: string;
 
@@ -33,4 +30,7 @@ export class ActivityLogs {
     default: () => 'CURRENT_TIMESTAMP',
   })
   createdAt: Date | null;
+
+  @Column('integer', { name: 'company_id', nullable: true })
+  companyId: number | null;
 }

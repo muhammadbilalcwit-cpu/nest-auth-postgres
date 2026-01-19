@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 // import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { UserModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { RolesModule } from './roles/roles.module';
@@ -13,10 +14,12 @@ import { Roles } from './entities/entities/Roles';
 import { UserRoles } from './entities/entities/UserRoles';
 import { Companies } from './entities/entities/Companies';
 import { Departments } from './entities/entities/Departments';
+import { Sessions } from './entities/entities/Sessions';
 import { ActivityLogsModule } from './activity-logs/activity-logs.module';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RedisModule } from './redis/redis.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { SessionsModule } from './sessions/sessions.module';
 // import { WalModule } from './wal/wal.module'; // WAL disabled - wal2json not available on Windows
 
 @Module({
@@ -24,6 +27,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     ConfigModule.forRoot({
       isGlobal: true, // <-- makes ConfigModule available everywhere
     }),
+    ScheduleModule.forRoot(), // Enable cron jobs
     // PassportModule.register({ defaultStrategy: 'jwt' }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -35,13 +39,14 @@ import { NotificationsModule } from './notifications/notifications.module';
         username: configService.get<string>('DB_USER'),
         password: configService.get<string>('DB_PASSWORD'),
         database: configService.get<string>('DB_NAME'),
-        entities: [Users, Roles, UserRoles, Companies, Departments],
+        entities: [Users, Roles, UserRoles, Companies, Departments, Sessions],
         autoLoadEntities: true,
         synchronize: false, // DB first
       }),
     }),
     RedisModule,
     NotificationsModule,
+    SessionsModule, // Session tracking with cron job
     // WalModule, // WAL disabled - wal2json not available on Windows
     AuthModule,
     UserModule,

@@ -24,9 +24,17 @@ export class AuthController {
   @HttpCode(200)
   async login(
     @Body() body: LoginDto,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken } = await this.authService.login(body);
+    const ipAddress = req.ip || req.headers['x-forwarded-for']?.toString();
+    const userAgent = req.headers['user-agent'];
+
+    const { accessToken, refreshToken } = await this.authService.login(
+      body,
+      ipAddress,
+      userAgent,
+    );
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
@@ -53,22 +61,56 @@ export class AuthController {
     const refreshToken = req.cookies?.refreshToken;
     if (!refreshToken) throw new UnauthorizedException();
 
-    const payload = this.jwtService.verify(refreshToken);
+    let payload;
+    try {
+      payload = this.jwtService.verify(refreshToken);
+    } catch {
+      // JWT expired or invalid - clear cookies
+      res.clearCookie('accessToken');
+      res.clearCookie('refreshToken');
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
-    const { accessToken } = await this.authService.refresh(payload.sub);
+    try {
+      // This will check if session is valid in database
+      const { accessToken } = await this.authService.refresh(
+        payload.sub,
+        refreshToken,
+      );
 
-    res.cookie('accessToken', accessToken, {
-      httpOnly: true,
-      secure: false,
-      sameSite: 'strict',
-      maxAge: 15 * 60 * 1000,
-    });
+      res.cookie('accessToken', accessToken, {
+        httpOnly: true,
+        secure: false,
+        sameSite: 'strict',
+        maxAge: 15 * 60 * 1000,
+      });
 
-    return ApiResponse.success('Token refreshed', 200);
+      return ApiResponse.success('Token refreshed', 200);
+    } catch {
+      // Session expired in database - clear cookies
+      res.clearCookie('accessToken');
+      res.clearCookie('refreshToken');
+      throw new UnauthorizedException('Session expired');
+    }
   }
 
   @Post('logout')
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const refreshToken = req.cookies?.refreshToken;
+
+    // Invalidate session in database if token exists
+    if (refreshToken) {
+      try {
+        const payload = this.jwtService.verify(refreshToken);
+        await this.authService.logout(payload.sub, refreshToken);
+      } catch {
+        // Token invalid, just clear cookies
+      }
+    }
+
     res.clearCookie('accessToken');
     res.clearCookie('refreshToken');
     return ApiResponse.success('Logged out successfully', 200);
