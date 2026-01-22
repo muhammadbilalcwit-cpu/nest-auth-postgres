@@ -1,7 +1,14 @@
-import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  OnModuleInit,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Companies } from '../entities/entities/Companies';
+import { Departments } from '../entities/entities/Departments';
+import { Users } from '../entities/entities/Users';
 import type Redis from 'ioredis';
 import {
   NotificationsGateway,
@@ -17,6 +24,10 @@ export class CompaniesService implements OnModuleInit {
   constructor(
     @InjectRepository(Companies)
     private repo: Repository<Companies>,
+    @InjectRepository(Departments)
+    private departmentsRepo: Repository<Departments>,
+    @InjectRepository(Users)
+    private usersRepo: Repository<Users>,
     @Inject('REDIS_CLIENT')
     private readonly redis: Redis,
     private readonly notificationsGateway: NotificationsGateway,
@@ -66,7 +77,9 @@ export class CompaniesService implements OnModuleInit {
           ),
         );
         await this.redis.set(this.MAX_ID_KEY, dbMaxId.toString());
-        console.log(`CompaniesService: Full sync - cached ${allRecords.length} companies in Redis`);
+        console.log(
+          `CompaniesService: Full sync - cached ${allRecords.length} companies in Redis`,
+        );
       }
     } else if (dbMaxId > lastSyncedId) {
       // Incremental sync - only fetch new records
@@ -85,7 +98,9 @@ export class CompaniesService implements OnModuleInit {
           ),
         );
         await this.redis.set(this.MAX_ID_KEY, dbMaxId.toString());
-        console.log(`CompaniesService: Incremental sync - cached ${newRecords.length} new companies`);
+        console.log(
+          `CompaniesService: Incremental sync - cached ${newRecords.length} new companies`,
+        );
       }
     } else {
       console.log('CompaniesService: Redis is up to date, no sync needed');
@@ -231,7 +246,31 @@ export class CompaniesService implements OnModuleInit {
   async delete(id: number, performer?: AuthUser) {
     // Get company before deleting
     const company = await this.repo.findOne({ where: { id } });
-    const companyName = company?.name;
+    if (!company) {
+      throw new BadRequestException('Company not found');
+    }
+
+    // Check for related departments
+    const departmentCount = await this.departmentsRepo.count({
+      where: { company: { id } },
+    });
+    if (departmentCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete company "${company.name}". It has ${departmentCount} department${departmentCount > 1 ? 's' : ''} attached. Please delete the departments first.`,
+      );
+    }
+
+    // Check for related users
+    const userCount = await this.usersRepo.count({
+      where: { company: { id } },
+    });
+    if (userCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete company "${company.name}". It has ${userCount} user${userCount > 1 ? 's' : ''} attached. Please delete or reassign the users first.`,
+      );
+    }
+
+    const companyName = company.name;
 
     await this.repo.delete(id);
 
@@ -240,7 +279,7 @@ export class CompaniesService implements OnModuleInit {
     console.log(`delete: Removed company:${id} from Redis`);
 
     // Emit notification to company users before they disconnect
-    if (performer && company) {
+    if (performer) {
       const notification: NotificationPayload = {
         type: 'company:deleted',
         message: `Company "${companyName}" has been deleted`,

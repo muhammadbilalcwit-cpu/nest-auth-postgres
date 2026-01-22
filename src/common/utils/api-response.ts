@@ -1,5 +1,15 @@
+export interface ApiResponseData {
+  message: string;
+  status_code: number;
+  data: unknown;
+}
+
 export class ApiResponse {
-  static success(message: string, statusCode: number, data: any = null) {
+  static success(
+    message: string,
+    statusCode: number,
+    data: unknown = null,
+  ): ApiResponseData {
     return {
       message,
       status_code: statusCode,
@@ -7,7 +17,11 @@ export class ApiResponse {
     };
   }
 
-  static error(message: string, statusCode: number, data: any = null) {
+  static error(
+    message: string,
+    statusCode: number,
+    data: unknown = null,
+  ): ApiResponseData {
     return {
       message,
       status_code: statusCode,

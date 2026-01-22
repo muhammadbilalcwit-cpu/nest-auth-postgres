@@ -5,6 +5,12 @@ import {
   HttpException,
   Logger,
 } from '@nestjs/common';
+import type { Request, Response } from 'express';
+
+interface ExceptionResponseObject {
+  message?: string | string[];
+  [key: string]: unknown;
+}
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -12,8 +18,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
-    const response = ctx.getResponse();
-    const request = ctx.getRequest();
+    const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
 
     const status =
       exception instanceof HttpException ? exception.getStatus() : 500;
@@ -24,15 +30,27 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let message: string;
     if (typeof raw === 'string') {
       message = raw;
-    } else if (Array.isArray((raw as any)?.message)) {
-      message = (raw as any).message.join(', ');
-    } else if (typeof (raw as any)?.message === 'string') {
-      message = (raw as any).message;
+    } else if (
+      typeof raw === 'object' &&
+      raw !== null &&
+      'message' in raw &&
+      Array.isArray((raw as ExceptionResponseObject).message)
+    ) {
+      message = ((raw as ExceptionResponseObject).message as string[]).join(
+        ', ',
+      );
+    } else if (
+      typeof raw === 'object' &&
+      raw !== null &&
+      'message' in raw &&
+      typeof (raw as ExceptionResponseObject).message === 'string'
+    ) {
+      message = (raw as ExceptionResponseObject).message as string;
     } else {
       try {
         message = JSON.stringify(raw);
         console.log('message:', message);
-      } catch (e) {
+      } catch {
         message = 'Unexpected error';
       }
     }

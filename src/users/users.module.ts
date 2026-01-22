@@ -8,12 +8,14 @@ import { Companies } from '../entities/entities/Companies';
 import { RolesModule } from '../roles/roles.module';
 import { UserRoles } from 'src/entities/entities/UserRoles';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { SessionsModule } from '../sessions/sessions.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Users, Departments, Companies, UserRoles]),
     RolesModule,
     NotificationsModule,
+    SessionsModule,
   ],
   controllers: [UserController],
   providers: [UserService],

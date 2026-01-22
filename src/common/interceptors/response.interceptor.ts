@@ -6,14 +6,24 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
+import type { Response } from 'express';
+
+interface FormattedResponse {
+  message: string;
+  status_code: number;
+  data: unknown;
+}
 
 @Injectable()
 export class ResponseInterceptor implements NestInterceptor {
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const res = context.switchToHttp().getResponse();
+  intercept(
+    context: ExecutionContext,
+    next: CallHandler,
+  ): Observable<FormattedResponse> {
+    const res = context.switchToHttp().getResponse<Response>();
 
     return next.handle().pipe(
-      map((data) => {
+      map((data: unknown): FormattedResponse => {
         // If controller already returned formatted response → leave it
         if (
           data &&
@@ -22,7 +32,7 @@ export class ResponseInterceptor implements NestInterceptor {
           'status_code' in data &&
           'data' in data
         ) {
-          return data;
+          return data as FormattedResponse;
         }
 
         return {

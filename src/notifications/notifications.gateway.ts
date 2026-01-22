@@ -6,7 +6,8 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -16,12 +17,20 @@ import * as cookie from 'cookie';
 export interface NotificationPayload {
   type: string;
   message: string;
-  data?: any;
+  data?: unknown;
   performedBy: {
     id: number;
     email: string;
   };
   timestamp: string;
+}
+
+interface JwtPayload {
+  sub: number;
+  email: string;
+  companyId?: number;
+  departmentId?: number;
+  roles: string[];
 }
 
 @Injectable()
@@ -35,13 +44,14 @@ export class NotificationsGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
   @WebSocketServer()
-  server: Server;
+  server!: Server;
 
   // Map to track which company each socket belongs to
   private socketCompanyMap: Map<string, number> = new Map();
 
   constructor(
     private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
     @InjectRepository(Departments)
     private readonly departmentsRepo: Repository<Departments>,
   ) {}
@@ -72,8 +82,8 @@ export class NotificationsGateway
       }
 
       // Verify JWT
-      const payload = this.jwtService.verify(token, {
-        secret: 'KJdkfjkdfjkj_dsofkdf_@#@!@#@!@#@!@#',
+      const payload = this.jwtService.verify<JwtPayload>(token, {
+        secret: this.configService.get<string>('JWT_SECRET'),
       });
 
       if (!payload || !payload.sub) {
@@ -83,19 +93,12 @@ export class NotificationsGateway
       }
 
       // Option C: Get company directly from JWT payload (single source of truth)
-      const jwtPayload = payload as {
-        sub: number;
-        email: string;
-        companyId?: number;
-        departmentId?: number;
-        roles: string[];
-      };
-      let companyId: number | null = jwtPayload.companyId || null;
+      let companyId: number | null = payload.companyId || null;
 
       // Fallback: Get company from department if companyId not in payload
-      if (!companyId && jwtPayload.departmentId) {
+      if (!companyId && payload.departmentId) {
         const dept = await this.departmentsRepo.findOne({
-          where: { id: jwtPayload.departmentId },
+          where: { id: payload.departmentId },
           relations: ['company'],
         });
         companyId = dept?.company?.id || null;
@@ -103,7 +106,7 @@ export class NotificationsGateway
 
       if (!companyId) {
         console.log(
-          `WebSocket: User ${jwtPayload.sub} has no company, disconnecting ${client.id}`,
+          `WebSocket: User ${payload.sub} has no company, disconnecting ${client.id}`,
         );
         client.disconnect();
         return;
@@ -112,15 +115,17 @@ export class NotificationsGateway
       // Store mapping and join company room
       this.socketCompanyMap.set(client.id, companyId);
       const roomName = `company:${companyId}`;
-      client.join(roomName);
+      void client.join(roomName);
 
       console.log(
-        `WebSocket: User ${jwtPayload.sub} (${jwtPayload.email}) connected to room ${roomName}`,
+        `WebSocket: User ${payload.sub} (${payload.email}) connected to room ${roomName}`,
       );
     } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
       console.log(
         `WebSocket: Authentication failed for ${client.id}:`,
-        error.message,
+        errorMessage,
       );
       client.disconnect();
     }

@@ -112,7 +112,7 @@ export class SessionsService {
     // twelveHoursAgo.setHours(twelveHoursAgo.getHours() - 12);
 
     const twoMinutesAgo = new Date();
-    twoMinutesAgo.setMinutes(twoMinutesAgo.getMinutes() - 30);
+    twoMinutesAgo.setMinutes(twoMinutesAgo.getMinutes() - 2);
 
     const result = await this.sessionsRepository.update(
       {

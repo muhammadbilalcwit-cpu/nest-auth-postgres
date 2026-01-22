@@ -20,6 +20,12 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { ApiResponse } from 'src/common/utils/api-response';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
 
+/**
+ * Controller for managing companies.
+ *
+ * All routes require JWT authentication and are typically restricted
+ * to super administrators.
+ */
 @UseGuards(AuthGuard('jwt'))
 @ApiTags('companies')
 @ApiBearerAuth('JWT')
@@ -27,6 +33,12 @@ import { AuthUser } from '../common/interfaces/auth-user.interface';
 export class CompaniesController {
   constructor(private service: CompaniesService) {}
 
+  /**
+   * Get all companies visible to the current user.
+   *
+   * @param req - Authenticated request containing the current user.
+   * @returns API response with the list of companies.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'company_admin')
   @Get('getAll')
@@ -35,6 +47,12 @@ export class CompaniesController {
     return ApiResponse.success('Companies retrieved successfully', 200, data);
   }
 
+  /**
+   * Get a company by its ID.
+   *
+   * @param id - Company identifier.
+   * @returns API response with the requested company.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @Get('getById/:id')
@@ -43,7 +61,13 @@ export class CompaniesController {
     return ApiResponse.success('Company retrieved successfully', 200, data);
   }
 
-  // Protected create - company_admin or super_admin
+  /**
+   * Create a new company.
+   *
+   * @param dto - Company creation payload.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response with the created company.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @Post('create')
@@ -52,6 +76,14 @@ export class CompaniesController {
     return ApiResponse.success('Company created successfully', 201, data);
   }
 
+  /**
+   * Update an existing company.
+   *
+   * @param id - Company identifier.
+   * @param dto - Partial company update payload.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response with the updated company.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @Put('update/:id')
@@ -64,6 +96,13 @@ export class CompaniesController {
     return ApiResponse.success('Company updated successfully', 200, data);
   }
 
+  /**
+   * Delete a company by ID.
+   *
+   * @param id - Company identifier.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response indicating successful deletion.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin')
   @Delete('delete/:id')

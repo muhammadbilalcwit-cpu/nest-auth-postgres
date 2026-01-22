@@ -4,11 +4,12 @@ import { Departments } from '../entities/entities/Departments';
 import { DepartmentsService } from './departments.service';
 import { DepartmentsController } from './departments.controller';
 import { Companies } from '../entities/entities/Companies';
+import { Users } from '../entities/entities/Users';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Departments, Companies]),
+    TypeOrmModule.forFeature([Departments, Companies, Users]),
     NotificationsModule,
   ],
   providers: [DepartmentsService],

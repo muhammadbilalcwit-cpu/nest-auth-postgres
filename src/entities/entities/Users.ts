@@ -50,6 +50,19 @@ export class Users {
   updatedAt: Date | null;
 
   @Column('boolean', {
+    name: 'is_active',
+    nullable: false,
+    default: () => 'true',
+  })
+  isActive: boolean;
+
+  @Column('timestamp without time zone', {
+    name: 'deactivated_at',
+    nullable: true,
+  })
+  deactivatedAt: Date | null;
+
+  @Column('boolean', {
     name: 'is_deleted',
     nullable: true,
     default: () => 'false',

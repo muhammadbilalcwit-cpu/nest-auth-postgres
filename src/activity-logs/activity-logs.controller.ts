@@ -7,6 +7,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { ApiResponse } from '../common/utils/api-response';
 
+/**
+ * Controller for querying user activity logs.
+ *
+ * All routes are JWT-protected and intended for administrative users.
+ */
 @UseGuards(AuthGuard('jwt'))
 @ApiTags('activity-logs')
 @ApiBearerAuth('JWT')
@@ -14,6 +19,16 @@ import { ApiResponse } from '../common/utils/api-response';
 export class ActivityLogsController {
   constructor(private readonly activityLogsService: ActivityLogsService) {}
 
+  /**
+   * Get a paginated list of activity logs visible to the current user.
+   *
+   * @param req - Authenticated request providing the current user.
+   * @param page - Page number (defaults to 1).
+   * @param limit - Page size (defaults to 20).
+   * @param method - Optional HTTP method filter.
+   * @param search - Optional free-text search filter.
+   * @returns API response with paginated activity logs.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'company_admin')
   @Get('getAll')
@@ -30,9 +45,20 @@ export class ActivityLogsController {
       method,
       search,
     });
-    return ApiResponse.success('Activity logs retrieved successfully', 200, result);
+    return ApiResponse.success(
+      'Activity logs retrieved successfully',
+      200,
+      result,
+    );
   }
 
+  /**
+   * Get activity logs for a specific user.
+   *
+   * @param req - Authenticated request providing the current user.
+   * @param userId - Target user ID.
+   * @returns API response with the user's activity logs.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('super_admin', 'company_admin')
   @Get('user/:userId')
@@ -41,6 +67,10 @@ export class ActivityLogsController {
     @Param('userId') userId: number,
   ) {
     const data = await this.activityLogsService.findByUser(+userId);
-    return ApiResponse.success('Activity logs retrieved successfully', 200, data);
+    return ApiResponse.success(
+      'Activity logs retrieved successfully',
+      200,
+      data,
+    );
   }
 }

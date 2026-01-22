@@ -1,22 +1,74 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { UserService } from './users.service';
 import { Repository } from 'typeorm';
 import { Users } from '../entities/entities/Users';
 import { Departments } from '../entities/entities/Departments';
+import { Companies } from '../entities/entities/Companies';
+import { UserRoles } from '../entities/entities/UserRoles';
 import { RolesService } from '../roles/roles.service';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
+import { ActivityLogsService } from '../activity-logs/activity-logs.service';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { SessionsService } from 'src/sessions/sessions.service';
 
 describe('UserService', () => {
   let service: UserService;
 
-  beforeEach(() => {
-    const fakeRepo = { save: jest.fn() } as unknown as Repository<Users>;
+  const createMockDependencies = (overrides?: {
+    repo?: Partial<Repository<Users>>;
+    deptRepo?: Partial<Repository<Departments>>;
+    rolesService?: Partial<RolesService>;
+  }) => {
+    const fakeRepo = {
+      save: jest.fn(),
+      ...overrides?.repo,
+    } as unknown as Repository<Users>;
     const fakeDeptRepo = {
       findOne: jest.fn(),
+      ...overrides?.deptRepo,
     } as unknown as Repository<Departments>;
-    const fakeRolesService = {} as unknown as RolesService;
+    const fakeCompanyRepo = {} as unknown as Repository<Companies>;
+    const fakeRolesService = {
+      ...overrides?.rolesService,
+    } as unknown as RolesService;
+    const fakeUserRolesRepo = {} as unknown as Repository<UserRoles>;
+    const fakeActivityLogsService = {
+      logForbiddenAccess: jest.fn(),
+    } as unknown as ActivityLogsService;
+    const fakeNotificationsGateway = {
+      emitToCompany: jest.fn(),
+    } as unknown as NotificationsGateway;
+    const fakeSessions = {
+      emitToCompany: jest.fn(),
+    } as unknown as SessionsService;
 
-    service = new UserService(fakeRepo, fakeDeptRepo, fakeRolesService);
+    return {
+      fakeRepo,
+      fakeDeptRepo,
+      fakeCompanyRepo,
+      fakeRolesService,
+      fakeUserRolesRepo,
+      fakeActivityLogsService,
+      fakeNotificationsGateway,
+      fakeSessions,
+    };
+  };
+
+  const createService = (deps: ReturnType<typeof createMockDependencies>) => {
+    return new UserService(
+      deps.fakeRepo,
+      deps.fakeDeptRepo,
+      deps.fakeCompanyRepo,
+      deps.fakeRolesService,
+      deps.fakeUserRolesRepo,
+      deps.fakeActivityLogsService,
+      deps.fakeNotificationsGateway,
+      deps.fakeSessions,
+    );
+  };
+
+  beforeEach(() => {
+    const deps = createMockDependencies();
+    service = createService(deps);
   });
 
   it('should be defined', () => {
@@ -24,24 +76,29 @@ describe('UserService', () => {
   });
 
   it('company_admin cannot assign super_admin role', async () => {
-    // mocks
-    const fakeRepo = { save: jest.fn() } as unknown as Repository<Users>;
-    const fakeDeptRepo = {
-      findOne: jest.fn().mockResolvedValue({ id: 1, company: { id: 1 } }),
-    } as unknown as Repository<Departments>;
-    const fakeRolesService = {
-      findBySlug: jest
-        .fn()
-        .mockImplementation((slug: string) => Promise.resolve({ id: 1, slug })),
-    } as unknown as RolesService;
+    const deps = createMockDependencies({
+      repo: { save: jest.fn() },
+      deptRepo: {
+        findOne: jest.fn().mockResolvedValue({ id: 1, company: { id: 1 } }),
+      },
+      rolesService: {
+        findBySlug: jest
+          .fn()
+          .mockImplementation((slug: string) =>
+            Promise.resolve({ id: 1, slug }),
+          ),
+      },
+    });
 
-    const svc = new UserService(fakeRepo, fakeDeptRepo, fakeRolesService);
+    const svc = createService(deps);
 
     const requester: AuthUser = {
       id: 10,
-      role: { id: 0, slug: 'company_admin', name: 'company_admin' },
+      sub: 10,
+      email: 'admin@test.com',
+      roles: ['company_admin'],
       departmentId: 1,
-    } as AuthUser;
+    };
 
     await expect(
       svc.create(requester, {
@@ -53,49 +110,57 @@ describe('UserService', () => {
   });
 
   it('manager sees only dept users', async () => {
-    const fakeRepo = {
-      find: jest.fn().mockResolvedValue([{ id: 2, departmentId: 5 }]),
-      createQueryBuilder: jest.fn().mockReturnValue({
-        leftJoinAndSelect: () => ({ where: () => ({ getMany: () => [] }) }),
-      }),
-    } as unknown as Repository<Users>;
-    const fakeDeptRepo = {
-      findOne: jest.fn().mockResolvedValue({ id: 5, company: { id: 2 } }),
-    } as unknown as Repository<Departments>;
-    const fakeRolesService = {} as unknown as RolesService;
+    const deps = createMockDependencies({
+      repo: {
+        find: jest.fn().mockResolvedValue([{ id: 2, departmentId: 5 }]),
+        createQueryBuilder: jest.fn().mockReturnValue({
+          leftJoinAndSelect: jest.fn().mockReturnThis(),
+          where: jest.fn().mockReturnThis(),
+          andWhere: jest.fn().mockReturnThis(),
+          orderBy: jest.fn().mockReturnThis(),
+          getMany: jest.fn().mockResolvedValue([]),
+        }),
+      },
+      deptRepo: {
+        findOne: jest.fn().mockResolvedValue({ id: 5, company: { id: 2 } }),
+      },
+    });
 
-    const svc = new UserService(fakeRepo, fakeDeptRepo, fakeRolesService);
+    const svc = createService(deps);
 
-    const users = await svc.findAllWithAccess({
+    const requester: AuthUser = {
       id: 20,
-      role: { id: 0, slug: 'manager', name: 'manager' },
+      sub: 20,
+      email: 'manager@test.com',
+      roles: ['manager'],
       departmentId: 5,
-    } as AuthUser);
+    };
+
+    const users = await svc.findAllWithAccess(requester);
     expect(users).toBeDefined();
   });
 
   it('manager cannot access company_admin even if in same department', async () => {
-    const fakeRepo = {
-      findOne: jest.fn().mockResolvedValue({
-        id: 3,
-        department: { id: 5 },
-        role: { slug: 'company_admin' },
-      }),
-    } as unknown as Repository<Users>;
-    const fakeDeptRepo = { findOne: jest.fn() } as unknown as Repository<Departments>;
-    const fakeRolesService = {} as unknown as RolesService;
+    const deps = createMockDependencies({
+      repo: {
+        findOne: jest.fn().mockResolvedValue({
+          id: 3,
+          department: { id: 5 },
+          role: { slug: 'company_admin' },
+        }),
+      },
+    });
 
-    const svc = new UserService(fakeRepo, fakeDeptRepo, fakeRolesService);
+    const svc = createService(deps);
 
-    await expect(
-      svc.findOneWithAccess(
-        3,
-        {
-          id: 20,
-          role: { id: 0, slug: 'manager', name: 'manager' },
-          departmentId: 5,
-        } as AuthUser,
-      ),
-    ).rejects.toThrow();
+    const requester: AuthUser = {
+      id: 20,
+      sub: 20,
+      email: 'manager@test.com',
+      roles: ['manager'],
+      departmentId: 5,
+    };
+
+    await expect(svc.findOneWithAccess(3, requester)).rejects.toThrow();
   });
 });

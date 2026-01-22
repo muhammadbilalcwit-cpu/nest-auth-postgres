@@ -6,6 +6,11 @@ import { ApiResponse } from 'src/common/utils/api-response';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { RolesGuard } from 'src/common/guards/roles.guard';
 
+/**
+ * Controller for querying available roles.
+ *
+ * All routes require JWT authentication and appropriate role permissions.
+ */
 @UseGuards(AuthGuard('jwt'))
 @ApiTags('roles')
 @ApiBearerAuth('JWT')
@@ -13,6 +18,11 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 export class RolesController {
   constructor(private service: RolesService) {}
 
+  /**
+   * Get all roles that exist in the system.
+   *
+   * @returns API response with the list of roles.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin', 'manager')
   @Get('getAll')

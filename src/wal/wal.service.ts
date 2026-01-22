@@ -31,8 +31,8 @@ interface Wal2JsonMessage {
 
 @Injectable()
 export class WalService implements OnModuleInit, OnModuleDestroy {
-  private client: LogicalReplicationService;
-  private plugin: Wal2JsonPlugin;
+  private client!: LogicalReplicationService;
+  private plugin!: Wal2JsonPlugin;
   private isRunning = false;
   private readonly slotName = 'nestjs_redis_sync_slot';
 
@@ -50,21 +50,21 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
     private readonly redis: Redis,
   ) {}
 
-  async onModuleInit() {
+  onModuleInit() {
     console.log('WAL Service: Initializing...');
-    await this.setupReplication();
+    this.setupReplication();
     this.startListening();
   }
 
-  async onModuleDestroy() {
+  onModuleDestroy() {
     console.log('WAL Service: Shutting down...');
     this.isRunning = false;
     if (this.client) {
-      this.client.stop();
+      void this.client.stop();
     }
   }
 
-  private async setupReplication() {
+  private setupReplication() {
     // Create the logical replication client
     this.client = new LogicalReplicationService({
       host: this.configService.get<string>('DB_HOST', 'localhost'),
@@ -96,7 +96,7 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
     console.log('WAL Service: Replication client configured');
   }
 
-  private async startListening() {
+  private startListening() {
     this.isRunning = true;
 
     try {
@@ -108,7 +108,7 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
       );
 
       // Subscribe to changes
-      this.client.subscribe(this.plugin, this.slotName).catch((err) => {
+      this.client.subscribe(this.plugin, this.slotName).catch((err: Error) => {
         console.error('WAL Subscribe Error:', err.message);
         // If slot doesn't exist, we need to create it first via SQL
         if (err.message.includes('does not exist')) {
@@ -133,9 +133,9 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
       });
 
       // Handle incoming data
-      this.client.on('data', async (lsn: string, log: Wal2JsonMessage) => {
+      this.client.on('data', (lsn: string, log: Wal2JsonMessage) => {
         console.log(`WAL Event received at LSN: ${lsn}`);
-        await this.processChanges(log);
+        void this.processChanges(log);
       });
     } catch (error) {
       console.error('WAL Service: Failed to start listening:', error);
@@ -177,11 +177,8 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleInsert(change: Wal2JsonChange, keyPrefix: string) {
-    const data = this.columnsToObject(
-      change.columnnames!,
-      change.columnvalues!,
-    );
-    const id = data.id;
+    const data = this.columnsToObject(change.columnnames, change.columnvalues);
+    const id = data.id as string | number;
     const key = `${keyPrefix}:${id}`;
 
     await this.redis.setex(key, 3600, JSON.stringify(data));
@@ -189,11 +186,8 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleUpdate(change: Wal2JsonChange, keyPrefix: string) {
-    const data = this.columnsToObject(
-      change.columnnames!,
-      change.columnvalues!,
-    );
-    const id = data.id;
+    const data = this.columnsToObject(change.columnnames, change.columnvalues);
+    const id = data.id as string | number;
     const key = `${keyPrefix}:${id}`;
 
     await this.redis.setex(key, 3600, JSON.stringify(data));
@@ -214,7 +208,7 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const id = oldKeys.keyvalues[idIndex];
+    const id = oldKeys.keyvalues[idIndex] as string | number;
     const key = `${keyPrefix}:${id}`;
 
     await this.redis.del(key);
@@ -235,6 +229,8 @@ export class WalService implements OnModuleInit, OnModuleDestroy {
   }
 
   private snakeToCamel(str: string): string {
-    return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+    return str.replace(/_([a-z])/g, (_, letter: string) =>
+      letter.toUpperCase(),
+    );
   }
 }

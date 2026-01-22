@@ -7,28 +7,29 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
+import type { Request, Response } from 'express';
 
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
   private readonly logger = new Logger('Response');
 
-  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
-    const req = context.switchToHttp().getRequest();
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const req = context.switchToHttp().getRequest<Request>();
     const { method, url } = req;
     const now = Date.now();
 
     return next.handle().pipe(
-      tap((data) => {
-        const res = context.switchToHttp().getResponse();
-        const status = (res as any).statusCode;
+      tap((data: unknown) => {
+        const res = context.switchToHttp().getResponse<Response>();
+        const status = res.statusCode;
         // Avoid logging full response bodies for large objects; summarize length/type
         let summary = '';
         try {
           if (data === undefined) summary = '[no body]';
-          else if (typeof data === 'object')
+          else if (typeof data === 'object' && data !== null)
             summary = `[object with keys=${Object.keys(data).length}]`;
-          else summary = String(data).slice(0, 200);
-        } catch (e) {
+          else summary = JSON.stringify(data).slice(0, 200);
+        } catch {
           summary = '[unserializable]';
         }
 

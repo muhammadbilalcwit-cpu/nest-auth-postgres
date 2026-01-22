@@ -6,6 +6,17 @@ import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { RolesService } from '../roles/roles.service';
 import { SessionsService } from '../sessions/sessions.service';
+import { Users } from '../entities/entities/Users';
+
+interface UserWithRoles extends Users {
+  roles?: { id: number; name: string; slug: string }[];
+}
+
+interface UserRole {
+  role: {
+    slug: string;
+  };
+}
 
 @Injectable()
 export class AuthService {
@@ -37,12 +48,10 @@ export class AuthService {
     });
   }
 
-  private async generateTokens(user: any) {
-    const roles = [
-      user.role?.slug,
-      ...(user.userRoles || []).map((r) => r.role.slug),
-    ]
-      .filter(Boolean)
+  private generateTokens(user: UserWithRoles) {
+    const userRoles = (user.userRoles || []) as UserRole[];
+    const roles = [user.role?.slug, ...userRoles.map((r) => r.role.slug)]
+      .filter((r): r is string => Boolean(r))
       .map((r) => r.toLowerCase());
 
     const payload = {
@@ -54,12 +63,12 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '15m', // FOR TESTING: 1 minute (change back to '15m' for production)
+      expiresIn: '1m', // FOR TESTING: 1 minute (change back to '15m' for production)
     });
 
     const refreshToken = this.jwtService.sign(
       { sub: user.id },
-      { expiresIn: '1d' },
+      { expiresIn: '3m' },
     );
 
     return { accessToken, refreshToken };
@@ -67,12 +76,19 @@ export class AuthService {
 
   async login(loginDto: LoginDto, ipAddress?: string, userAgent?: string) {
     const user = await this.usersService.findByEmail(loginDto.email);
-    if (!user) throw new UnauthorizedException();
+    if (!user) throw new UnauthorizedException('Invalid credentials');
 
     const isMatch = await bcrypt.compare(loginDto.password, user.password);
-    if (!isMatch) throw new UnauthorizedException();
+    if (!isMatch) throw new UnauthorizedException('Invalid credentials');
 
-    const tokens = await this.generateTokens(user);
+    // Check if user account is active
+    if (!user.isActive) {
+      throw new UnauthorizedException(
+        'Your account has been deactivated. Please contact your administrator.',
+      );
+    }
+
+    const tokens = this.generateTokens(user);
 
     // Create session in database
     await this.sessionsService.createSession(

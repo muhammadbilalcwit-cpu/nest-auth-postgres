@@ -20,6 +20,7 @@ import {
   NotificationsGateway,
   NotificationPayload,
 } from '../notifications/notifications.gateway';
+import { SessionsService } from '../sessions/sessions.service';
 
 @Injectable()
 export class UserService {
@@ -35,6 +36,7 @@ export class UserService {
     private userRolesRepo: Repository<UserRoles>,
     private readonly activityLogsService: ActivityLogsService,
     private readonly notificationsGateway: NotificationsGateway,
+    private readonly sessionsService: SessionsService,
   ) {}
 
   // Normalize requester roles to accept either `roles` array or legacy `role` property
@@ -43,7 +45,7 @@ export class UserService {
     const rawRoles: string[] = requester
       ? (requester as { roles?: string[]; role?: string }).roles ||
         ((requester as { role?: string }).role
-          ? [(requester as { role?: string }).role as string]
+          ? [(requester as { role?: string }).role]
           : [])
       : [];
     return (rawRoles || [])
@@ -101,7 +103,7 @@ export class UserService {
       data = requesterOrData as CreateUserDto;
     } else {
       requester = requesterOrData as AuthUser;
-      data = maybeData as CreateUserDto;
+      data = maybeData;
     }
 
     const toSave: Partial<Users> = { ...data };
@@ -125,7 +127,8 @@ export class UserService {
         toSave.company = dept.company;
       }
       // remove raw id so TypeORM update/save doesn't try to set a nonexistent column
-      delete (toSave as any).departmentId;
+      delete (toSave as Partial<Users> & { departmentId?: number })
+        .departmentId;
     }
 
     // Handle companyId directly - for company_admin users (no department)
@@ -137,7 +140,7 @@ export class UserService {
       if (!company) throw new NotFoundException('Company not found');
       toSave.company = company;
       // remove raw id so TypeORM update/save doesn't try to set a nonexistent column
-      delete (toSave as any).companyId;
+      delete (toSave as Partial<Users> & { companyId?: number }).companyId;
     }
 
     // If requester is company_admin, enforce they cannot assign higher roles and ensure department belongs to their company
@@ -151,7 +154,7 @@ export class UserService {
           ['super_admin', 'company_admin'].includes(incomingRole)
         ) {
           // Log forbidden access attempt
-          this.activityLogsService.logForbiddenAccess({
+          void this.activityLogsService.logForbiddenAccess({
             userId: requester?.id,
             username: requester?.email,
             companyId: requester?.companyId,
@@ -165,7 +168,7 @@ export class UserService {
         // Option C: Validate department belongs to company_admin's company
         if (typeof data.departmentId !== 'undefined' && data.departmentId) {
           if (!requester.companyId) {
-            this.activityLogsService.logForbiddenAccess({
+            void this.activityLogsService.logForbiddenAccess({
               userId: requester?.id,
               username: requester?.email,
               ipAddress: ctx?.ipAddress || '',
@@ -181,7 +184,7 @@ export class UserService {
           });
 
           if (!dept || dept.company?.id !== requester.companyId) {
-            this.activityLogsService.logForbiddenAccess({
+            void this.activityLogsService.logForbiddenAccess({
               userId: requester?.id,
               username: requester?.email,
               ipAddress: ctx?.ipAddress || '',
@@ -215,7 +218,11 @@ export class UserService {
   }
 
   // requester-aware listing
-  async findAllWithAccess(requester?: AuthUser | null) {
+  // includeInactive: super_admin sees all, others see only active by default
+  async findAllWithAccess(
+    requester?: AuthUser | null,
+    includeInactive = false,
+  ) {
     if (!requester) return [];
 
     const requesterRoles = this._normalizeRequesterRoles(requester);
@@ -223,7 +230,10 @@ export class UserService {
     let users: Users[] = [];
 
     if (requesterRoles.includes('super_admin')) {
+      // super_admin can see all users, optionally including inactive
+      const whereClause = includeInactive ? {} : { isActive: true };
       users = await this.repo.find({
+        where: whereClause,
         relations: [
           'role',
           'userRoles',
@@ -238,7 +248,7 @@ export class UserService {
       // Option C: Use companyId directly from requester (single source of truth)
       if (!requester.companyId) return [];
 
-      users = await this.repo
+      const qb = this.repo
         .createQueryBuilder('u')
         .leftJoinAndSelect('u.role', 'primaryRole')
         .leftJoinAndSelect('u.userRoles', 'ur')
@@ -247,9 +257,40 @@ export class UserService {
         .leftJoinAndSelect('u.company', 'company')
         .where('u.company_id = :companyId', {
           companyId: requester.companyId,
-        })
-        .orderBy('u.id', 'ASC')
-        .getMany();
+        });
+
+      // company_admin can see inactive users in their company (for reactivation)
+      if (!includeInactive) {
+        qb.andWhere('u.is_active = :isActive', { isActive: true });
+      }
+
+      const allCompanyUsers = await qb.getMany();
+
+      // Enterprise pattern: Filter out company_admins and sort by role hierarchy
+      const roleOrder: Record<string, number> = {
+        manager: 1,
+        user: 2,
+      };
+
+      users = allCompanyUsers
+        // Filter out company_admin users - they should not see other company_admins
+        .filter((u) => u.role?.slug?.toLowerCase() !== 'company_admin')
+        // Sort by role hierarchy (manager first, then user), then alphabetically by name
+        .sort((a, b) => {
+          const aRole = a.role?.slug?.toLowerCase() || '';
+          const bRole = b.role?.slug?.toLowerCase() || '';
+          const aOrder = roleOrder[aRole] ?? 99;
+          const bOrder = roleOrder[bRole] ?? 99;
+
+          if (aOrder !== bOrder) return aOrder - bOrder;
+
+          // Secondary sort by firstname, then lastname
+          const aName =
+            `${a.firstname || ''} ${a.lastname || ''}`.toLowerCase();
+          const bName =
+            `${b.firstname || ''} ${b.lastname || ''}`.toLowerCase();
+          return aName.localeCompare(bName);
+        });
     } else if (requesterRoles.includes('manager')) {
       if (!requester.departmentId) {
         console.log(
@@ -260,7 +301,7 @@ export class UserService {
 
       // Manager sees all users in their department EXCEPT themselves
       // Enterprise pattern: Manager manages their team, not themselves
-      users = await this.repo
+      const qb = this.repo
         .createQueryBuilder('u')
         .leftJoinAndSelect('u.role', 'primaryRole')
         .leftJoinAndSelect('u.userRoles', 'ur')
@@ -272,9 +313,14 @@ export class UserService {
         })
         .andWhere('u.id != :requesterId', {
           requesterId: requester.id,
-        })
-        .orderBy('u.id', 'ASC')
-        .getMany();
+        });
+
+      // Manager sees only active users by default
+      if (!includeInactive) {
+        qb.andWhere('u.is_active = :isActive', { isActive: true });
+      }
+
+      users = await qb.orderBy('u.id', 'ASC').getMany();
     } else {
       // plain user: only self
       users = await this.repo.find({
@@ -308,7 +354,7 @@ export class UserService {
     if (requesterRoles.includes('company_admin')) {
       // Option C: Use companyId directly (single source of truth)
       if (!requester?.companyId) {
-        this.activityLogsService.logForbiddenAccess({
+        void this.activityLogsService.logForbiddenAccess({
           userId: requester?.id,
           username: requester?.email,
           ipAddress: ctx?.ipAddress || '',
@@ -322,7 +368,7 @@ export class UserService {
       if (target.company?.id === requester.companyId) return target;
 
       // Log forbidden access attempt
-      this.activityLogsService.logForbiddenAccess({
+      await this.activityLogsService.logForbiddenAccess({
         userId: requester?.id,
         username: requester?.email,
         ipAddress: ctx?.ipAddress || '',
@@ -334,7 +380,7 @@ export class UserService {
     if (requesterRoles.includes('manager')) {
       if (!requester?.departmentId) {
         // Log forbidden access attempt
-        this.activityLogsService.logForbiddenAccess({
+        await this.activityLogsService.logForbiddenAccess({
           userId: requester?.id,
           username: requester?.email,
           ipAddress: ctx?.ipAddress || '',
@@ -354,7 +400,7 @@ export class UserService {
       // managers can NEVER access company_admin
       if (targetRoles.includes('company_admin')) {
         // Log forbidden access attempt
-        this.activityLogsService.logForbiddenAccess({
+        await this.activityLogsService.logForbiddenAccess({
           userId: requester?.id,
           username: requester?.email,
           ipAddress: ctx?.ipAddress || '',
@@ -370,7 +416,7 @@ export class UserService {
         return target;
       }
       // Log forbidden access attempt
-      this.activityLogsService.logForbiddenAccess({
+      await this.activityLogsService.logForbiddenAccess({
         userId: requester?.id,
         username: requester?.email,
         ipAddress: ctx?.ipAddress || '',
@@ -385,7 +431,7 @@ export class UserService {
     if (requester?.id === target.id) return target;
 
     // Log forbidden access attempt
-    this.activityLogsService.logForbiddenAccess({
+    await this.activityLogsService.logForbiddenAccess({
       userId: requester?.id,
       username: requester?.email,
       ipAddress: ctx?.ipAddress || '',
@@ -468,7 +514,7 @@ export class UserService {
         if (!r) throw new NotFoundException('Role not found');
         toUpdate.role = r;
         // remove non-column property to avoid TypeORM error
-        delete (toUpdate as any).roleSlug;
+        delete (toUpdate as Partial<Users> & { roleSlug?: string }).roleSlug;
       }
 
       if (typeof data.departmentId !== 'undefined') {
@@ -483,7 +529,8 @@ export class UserService {
           toUpdate.company = dept.company;
         }
         // remove raw id to avoid TypeORM error updating a non-column property
-        delete (toUpdate as any).departmentId;
+        delete (toUpdate as Partial<Users> & { departmentId?: number })
+          .departmentId;
       }
 
       // If password is being updated, hash it before saving
@@ -514,7 +561,7 @@ export class UserService {
     }
 
     // Log forbidden access attempt
-    this.activityLogsService.logForbiddenAccess({
+    await this.activityLogsService.logForbiddenAccess({
       userId: requester?.id,
       username: requester?.email,
       ipAddress: ctx?.ipAddress || '',
@@ -566,7 +613,7 @@ export class UserService {
       !requesterRoles.includes('company_admin')
     ) {
       // Log forbidden access attempt
-      this.activityLogsService.logForbiddenAccess({
+      await this.activityLogsService.logForbiddenAccess({
         userId: requester?.id,
         username: requester?.email,
         ipAddress: ctx?.ipAddress || '',
@@ -593,7 +640,9 @@ export class UserService {
 
     // company_admin cannot assign company_admin as secondary role
     if (requesterRoles.includes('company_admin')) {
-      if (roleSlugs.some((r: string) => normalizeRoleSlug(r) === 'company_admin')) {
+      if (
+        roleSlugs.some((r: string) => normalizeRoleSlug(r) === 'company_admin')
+      ) {
         await this.activityLogsService.logForbiddenAccess({
           userId: requester?.id,
           username: requester?.email,
@@ -716,6 +765,123 @@ export class UserService {
         type: 'user:role_removed',
         message: `Role "${roleSlug}" removed from user "${target.email}"`,
         data: { userId, email: target.email, role: roleSlug },
+        performedBy: { id: requester.id, email: requester.email },
+        timestamp: new Date().toISOString(),
+      };
+      this.notificationsGateway.emitToCompany(companyId, notification);
+    }
+
+    return updatedUser;
+  }
+
+  /**
+   * Set user active/inactive status with role-based authorization
+   * - super_admin: can change status of company_admin, manager, user (not other super_admin)
+   * - company_admin: can change status of manager, user in their company (not super_admin or company_admin)
+   */
+  async setUserActiveStatus(
+    requester: AuthUser,
+    userId: number,
+    isActive: boolean,
+    ctx?: RequestContext,
+  ): Promise<Users | null> {
+    const target = await this.findOne(userId);
+    if (!target) throw new NotFoundException('User not found');
+
+    const requesterRoles = this._normalizeRequesterRoles(requester);
+    const targetRoles = [
+      target.role?.slug,
+      ...(target.userRoles || []).map((ur) => ur.role?.slug),
+    ]
+      .filter(Boolean)
+      .map((r) => r.toLowerCase().trim());
+
+    // super_admin authorization
+    if (requesterRoles.includes('super_admin')) {
+      // super_admin cannot deactivate other super_admins
+      if (targetRoles.includes('super_admin')) {
+        await this.activityLogsService.logForbiddenAccess({
+          userId: requester.id,
+          username: requester.email,
+          companyId: requester.companyId,
+          ipAddress: ctx?.ipAddress || '',
+          api: ctx?.api || '',
+          method: ctx?.method || '',
+        });
+        throw new ForbiddenException('Cannot change status of super_admin');
+      }
+      // super_admin can change status of company_admin, manager, user
+    }
+    // company_admin authorization
+    else if (requesterRoles.includes('company_admin')) {
+      // company_admin cannot change status of super_admin or company_admin
+      if (
+        targetRoles.includes('super_admin') ||
+        targetRoles.includes('company_admin')
+      ) {
+        await this.activityLogsService.logForbiddenAccess({
+          userId: requester.id,
+          username: requester.email,
+          companyId: requester.companyId,
+          ipAddress: ctx?.ipAddress || '',
+          api: ctx?.api || '',
+          method: ctx?.method || '',
+        });
+        throw new ForbiddenException(
+          'Cannot change status of super_admin or company_admin',
+        );
+      }
+
+      // company_admin can only change users in their own company
+      if (!requester.companyId || target.company?.id !== requester.companyId) {
+        await this.activityLogsService.logForbiddenAccess({
+          userId: requester.id,
+          username: requester.email,
+          companyId: requester.companyId,
+          ipAddress: ctx?.ipAddress || '',
+          api: ctx?.api || '',
+          method: ctx?.method || '',
+        });
+        throw new ForbiddenException(
+          'Cannot change status of users outside your company',
+        );
+      }
+    }
+    // Only super_admin and company_admin can change user status
+    else {
+      await this.activityLogsService.logForbiddenAccess({
+        userId: requester.id,
+        username: requester.email,
+        companyId: requester.companyId,
+        ipAddress: ctx?.ipAddress || '',
+        api: ctx?.api || '',
+        method: ctx?.method || '',
+      });
+      throw new ForbiddenException('Not authorized to change user status');
+    }
+
+    // Perform the status update
+    await this.repo.update(userId, {
+      isActive,
+      deactivatedAt: isActive ? null : new Date(),
+    });
+
+    // If deactivating, invalidate all user sessions to force immediate logout
+    if (!isActive) {
+      await this.sessionsService.invalidateAllUserSessions(userId);
+      console.log(`Invalidated all sessions for deactivated user ${userId}`);
+    }
+
+    const updatedUser = await this.findOne(userId);
+
+    // Emit notification
+    const companyId = target.company?.id;
+    if (companyId) {
+      const statusText = isActive ? 'activated' : 'deactivated';
+      const notification: NotificationPayload = {
+        type: isActive ? 'user:activated' : 'user:deactivated',
+        message: `User "${target.email}" has been ${statusText}`,
+        data: { userId, email: target.email, isActive },
         performedBy: { id: requester.id, email: requester.email },
         timestamp: new Date().toISOString(),
       };

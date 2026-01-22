@@ -1,14 +1,15 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
-import { Logger } from '@nestjs/common';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
-import cookieParser from 'cookie-parser';
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
+const cookieParser: typeof import('cookie-parser') = require('cookie-parser');
 import { ConfigService } from '@nestjs/config';
+import type { Request, Response, NextFunction } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -39,7 +40,9 @@ async function bootstrap() {
   app.useGlobalFilters(new AllExceptionsFilter());
 
   // Register simple request/response logging middleware
-  app.use((req, res, next) => new LoggingMiddleware().use(req, res, next));
+  app.use((req: Request, res: Response, next: NextFunction) =>
+    new LoggingMiddleware().use(req, res, next),
+  );
 
   const logger = new Logger('Bootstrap');
   logger.log('Request/Response logging enabled');
@@ -64,4 +67,4 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Server running on port ${port}`);
 }
-bootstrap();
+void bootstrap();

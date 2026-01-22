@@ -3,6 +3,12 @@ import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 import { normalizeRoleSlug } from '../utils/roles';
 import { ActivityLogsService } from 'src/activity-logs/activity-logs.service';
+import type { Request } from 'express';
+import { AuthUser } from '../interfaces/auth-user.interface';
+
+interface RequestWithUser extends Request {
+  user?: AuthUser;
+}
 
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -21,7 +27,7 @@ export class RolesGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
+    const request = context.switchToHttp().getRequest<RequestWithUser>();
     const user = request.user;
 
     if (!user || !Array.isArray(user.roles)) {
@@ -32,7 +38,7 @@ export class RolesGuard implements CanActivate {
     // roles from JWT
     const normalizedUserRoles = user.roles
       .map(normalizeRoleSlug)
-      .filter(Boolean);
+      .filter((r): r is string => Boolean(r));
 
     // super_admin shortcut
     if (normalizedUserRoles.includes('super_admin')) {
@@ -41,31 +47,30 @@ export class RolesGuard implements CanActivate {
 
     const normalizedRequired = requiredRoles
       .map(normalizeRoleSlug)
-      .filter(Boolean);
+      .filter((r): r is string => Boolean(r));
 
     const allowed = normalizedRequired.some((role) =>
       normalizedUserRoles.includes(role),
     );
 
     if (!allowed) {
-      console.log('yes came here');
       console.log('RolesGuard DENY:', {
         requiredRoles,
         normalizedRequired,
         normalizedUserRoles,
       });
 
-      // Log forbidden access attempt
-      this.activityLogService.logForbiddenAccess({
+      // Log forbidden access attempt (fire-and-forget, don't block the response)
+      void this.activityLogService.logForbiddenAccess({
         userId: user?.id,
         username: user?.email,
         companyId: user?.companyId,
-        ipAddress: request.ip,
+        ipAddress: request.ip || '',
         api: request.originalUrl,
         method: request.method,
       });
     }
-    console.log('allowed:', allowed);
+
     return allowed;
   }
 }

@@ -1,11 +1,11 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { UserController } from './users.controller';
+import { UserService } from './users.service';
 
 describe('UserController', () => {
   let controller: UserController;
 
   beforeEach(() => {
-    const mockUserService = {} as unknown as any;
+    const mockUserService = {} as unknown as UserService;
     controller = new UserController(mockUserService);
   });
 

@@ -1,8 +1,8 @@
-export function normalizeRoleSlug(slug?: string) {
+export function normalizeRoleSlug(slug?: string): string {
   if (!slug) return '';
   try {
     return String(slug).toLowerCase().trim();
-  } catch (e) {
+  } catch {
     return '';
   }
 }

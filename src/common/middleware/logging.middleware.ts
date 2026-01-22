@@ -10,13 +10,13 @@ export class LoggingMiddleware implements NestMiddleware {
     const start = Date.now();
 
     // clone body and redact passwords
-    let body: any = undefined;
+    let body: Record<string, unknown> | undefined = undefined;
     try {
-      body = { ...(req as any).body };
+      body = { ...(req.body as Record<string, unknown>) };
       if (body && typeof body === 'object' && 'password' in body) {
         body.password = '[REDACTED]';
       }
-    } catch (e) {
+    } catch {
       // ignore
     }
 

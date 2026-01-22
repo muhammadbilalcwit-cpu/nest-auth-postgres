@@ -3,11 +3,13 @@ import {
   Injectable,
   NotFoundException,
   OnModuleInit,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Departments } from '../entities/entities/Departments';
 import { Companies } from '../entities/entities/Companies';
+import { Users } from '../entities/entities/Users';
 import type Redis from 'ioredis';
 import {
   NotificationsGateway,
@@ -25,6 +27,8 @@ export class DepartmentsService implements OnModuleInit {
     private repo: Repository<Departments>,
     @InjectRepository(Companies)
     private companiesRepo: Repository<Companies>,
+    @InjectRepository(Users)
+    private usersRepo: Repository<Users>,
     @Inject('REDIS_CLIENT')
     private readonly redis: Redis,
     private readonly notificationsGateway: NotificationsGateway,
@@ -61,7 +65,9 @@ export class DepartmentsService implements OnModuleInit {
     // Step 4: Full sync if Redis is empty, otherwise incremental sync
     if (redisIsEmpty && dbMaxId > 0) {
       // Redis is empty - do full sync from DB
-      console.log('DepartmentsService: Redis is empty, doing full sync from DB');
+      console.log(
+        'DepartmentsService: Redis is empty, doing full sync from DB',
+      );
       const allRecords = await this.repo.find({ relations: ['company'] });
 
       if (allRecords.length > 0) {
@@ -115,13 +121,38 @@ export class DepartmentsService implements OnModuleInit {
 
     let companyId: number | null = null;
 
-    if (data.companyId) {
+    // Determine companyId: use provided companyId or performer's companyId
+    const effectiveCompanyId = data.companyId || performer?.companyId;
+
+    if (effectiveCompanyId) {
       const comp = await this.companiesRepo.findOne({
-        where: { id: data.companyId },
+        where: { id: effectiveCompanyId },
       });
       if (!comp) throw new NotFoundException('Company not found');
+
+      // If performer is company_admin, verify they belong to this company
+      if (performer) {
+        const performerRoles = (performer.roles || []).map((r) =>
+          String(r).toLowerCase().trim(),
+        );
+
+        // company_admin can only create departments in their own company
+        if (
+          performerRoles.includes('company_admin') &&
+          !performerRoles.includes('super_admin') &&
+          performer.companyId !== effectiveCompanyId
+        ) {
+          throw new NotFoundException(
+            'Not allowed to create department in another company',
+          );
+        }
+      }
+
       dept.company = comp;
       companyId = comp.id;
+    } else if (performer) {
+      // No companyId provided and performer has no companyId - this is an error
+      throw new NotFoundException('Company is required to create a department');
     }
 
     const saved = await this.repo.save(dept);
@@ -325,8 +356,22 @@ export class DepartmentsService implements OnModuleInit {
       relations: ['company'],
     });
 
-    const companyId = dept?.company?.id;
-    const deptName = dept?.name;
+    if (!dept) {
+      throw new BadRequestException('Department not found');
+    }
+
+    // Check for related users
+    const userCount = await this.usersRepo.count({
+      where: { department: { id } },
+    });
+    if (userCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete department "${dept.name}". It has ${userCount} user${userCount > 1 ? 's' : ''} attached. Please delete or reassign the users first.`,
+      );
+    }
+
+    const companyId = dept.company?.id;
+    const deptName = dept.name;
 
     await this.repo.delete(id);
 

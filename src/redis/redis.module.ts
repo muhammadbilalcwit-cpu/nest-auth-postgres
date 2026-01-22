@@ -18,11 +18,11 @@ import Redis from 'ioredis';
         });
 
         redis.on('connect', () => {
-          console.log('✅ Connected to Redis successfully');
+          console.log('Connected to Redis successfully');
         });
 
         redis.on('error', (err) => {
-          console.error('❌ Redis connection error:', err);
+          console.error('Redis connection error:', err);
         });
 
         return redis;

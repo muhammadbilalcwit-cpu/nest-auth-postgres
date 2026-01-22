@@ -20,6 +20,12 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ApiResponse } from 'src/common/utils/api-response';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
 
+/**
+ * Controller for managing departments within companies.
+ *
+ * Routes are JWT-protected and typically restricted to company admins,
+ * super admins and managers.
+ */
 @UseGuards(AuthGuard('jwt'))
 @ApiTags('departments')
 @ApiBearerAuth('JWT')
@@ -27,6 +33,12 @@ import { AuthUser } from '../common/interfaces/auth-user.interface';
 export class DepartmentsController {
   constructor(private service: DepartmentsService) {}
 
+  /**
+   * Get all departments visible to the current user.
+   *
+   * @param req - Authenticated request providing the current user.
+   * @returns API response with the list of departments.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin', 'manager')
   @Get('getAll')
@@ -35,6 +47,12 @@ export class DepartmentsController {
     return ApiResponse.success('Departments retrieved successfully', 200, data);
   }
 
+  /**
+   * Get a department by its ID.
+   *
+   * @param id - Department identifier.
+   * @returns API response with the requested department.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin', 'manager')
   @Get('getById/:id')
@@ -43,6 +61,12 @@ export class DepartmentsController {
     return ApiResponse.success('Department retrieved successfully', 200, data);
   }
 
+  /**
+   * Get all departments belonging to a specific company.
+   *
+   * @param companyId - Company identifier.
+   * @returns API response with the list of departments for the company.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin', 'manager')
   @Get('getByCompany/:companyId')
@@ -51,7 +75,13 @@ export class DepartmentsController {
     return ApiResponse.success('Departments retrieved successfully', 200, data);
   }
 
-  // Protected create - company_admin or super_admin
+  /**
+   * Create a new department.
+   *
+   * @param dto - Department creation payload.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response with the created department.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin')
   @Post('create')
@@ -63,6 +93,14 @@ export class DepartmentsController {
     return ApiResponse.success('Department created successfully', 201, data);
   }
 
+  /**
+   * Update an existing department.
+   *
+   * @param id - Department identifier.
+   * @param dto - Partial update payload.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response with the updated department.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin')
   @Put('update/:id')
@@ -75,6 +113,13 @@ export class DepartmentsController {
     return ApiResponse.success('Department updated successfully', 200, data);
   }
 
+  /**
+   * Delete a department by ID.
+   *
+   * @param id - Department identifier.
+   * @param req - Authenticated request providing the acting user.
+   * @returns API response indicating successful deletion.
+   */
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('company_admin', 'super_admin')
   @Delete('delete/:id')

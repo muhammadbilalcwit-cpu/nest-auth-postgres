@@ -108,7 +108,7 @@ export class ActivityLogsService {
     requester: AuthUser,
     params: PaginationParams,
   ): Promise<PaginatedResult<ActivityLogs>> {
-    const roles = (requester.roles || []).map((r) =>
+    const roles = (requester.roles || []).map((r: string) =>
       String(r).toLowerCase().trim(),
     );
 

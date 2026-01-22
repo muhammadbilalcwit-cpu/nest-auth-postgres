@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { config } from 'dotenv';
 import { createConnection } from 'typeorm';
 import { Roles } from '../entities/entities/Roles';
 import { Companies } from '../entities/entities/Companies';
@@ -6,14 +7,17 @@ import { Departments } from '../entities/entities/Departments';
 import { Users } from '../entities/entities/Users';
 import * as bcrypt from 'bcrypt';
 
+// Load environment variables
+config();
+
 async function run() {
   const conn = await createConnection({
     type: 'postgres',
-    host: 'localhost',
-    port: 5432,
-    username: 'postgres',
-    password: 'root',
-    database: 'auth_crud',
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    username: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'auth_crud',
     entities: [Roles, Companies, Departments, Users],
     synchronize: false,
   });
