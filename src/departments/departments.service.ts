@@ -11,10 +11,7 @@ import { Departments } from '../entities/entities/Departments';
 import { Companies } from '../entities/entities/Companies';
 import { Users } from '../entities/entities/Users';
 import type Redis from 'ioredis';
-import {
-  NotificationsGateway,
-  NotificationPayload,
-} from '../notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
 
 @Injectable()
@@ -180,14 +177,15 @@ export class DepartmentsService implements OnModuleInit {
 
       // Emit notification to company users
       if (companyId && performer) {
-        const notification: NotificationPayload = {
+        void this.notificationsGateway.emitNotification({
+          companyId,
           type: 'department:created',
+          title: 'Department Created',
           message: `New department "${deptWithRelations.name}" has been created`,
-          data: deptWithRelations,
-          performedBy: { id: performer.id, email: performer.email },
-          timestamp: new Date().toISOString(),
-        };
-        this.notificationsGateway.emitToCompany(companyId, notification);
+          data: deptWithRelations as object,
+          actorId: performer.id,
+          actorEmail: performer.email,
+        });
       }
     }
 
@@ -334,14 +332,15 @@ export class DepartmentsService implements OnModuleInit {
       // Emit notification to company users
       const companyId = dept.company?.id || existingDept?.company?.id;
       if (companyId && performer) {
-        const notification: NotificationPayload = {
+        void this.notificationsGateway.emitNotification({
+          companyId,
           type: 'department:updated',
+          title: 'Department Updated',
           message: `Department "${dept.name}" has been updated`,
-          data: dept,
-          performedBy: { id: performer.id, email: performer.email },
-          timestamp: new Date().toISOString(),
-        };
-        this.notificationsGateway.emitToCompany(companyId, notification);
+          data: dept as object,
+          actorId: performer.id,
+          actorEmail: performer.email,
+        });
       }
     }
 
@@ -381,14 +380,15 @@ export class DepartmentsService implements OnModuleInit {
 
     // Emit notification to company users
     if (companyId && performer) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId,
         type: 'department:deleted',
+        title: 'Department Deleted',
         message: `Department "${deptName}" has been deleted`,
         data: { id, name: deptName },
-        performedBy: { id: performer.id, email: performer.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(companyId, notification);
+        actorId: performer.id,
+        actorEmail: performer.email,
+      });
     }
 
     return { deleted: true };

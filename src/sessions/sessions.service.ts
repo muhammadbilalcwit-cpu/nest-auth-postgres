@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import { Sessions } from '../entities/entities/Sessions';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import * as crypto from 'crypto';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 
 @Injectable()
 export class SessionsService {
@@ -12,6 +13,8 @@ export class SessionsService {
   constructor(
     @InjectRepository(Sessions)
     private sessionsRepository: Repository<Sessions>,
+    @Inject(forwardRef(() => NotificationsGateway))
+    private notificationsGateway: NotificationsGateway,
   ) {}
 
   /**
@@ -23,6 +26,7 @@ export class SessionsService {
 
   /**
    * Create a new session when user logs in
+   * Allows multiple sessions per user (multi-device/browser support)
    */
   async createSession(
     userId: number,
@@ -30,12 +34,6 @@ export class SessionsService {
     ipAddress?: string,
     userAgent?: string,
   ): Promise<Sessions> {
-    // Invalidate any existing valid sessions for this user (single session per user)
-    await this.sessionsRepository.update(
-      { userId, isValid: true },
-      { isValid: false, updatedAt: new Date() },
-    );
-
     const session = this.sessionsRepository.create({
       userId,
       refreshTokenHash: this.hashToken(refreshToken),
@@ -100,24 +98,90 @@ export class SessionsService {
   }
 
   /**
+   * Invalidate all sessions for users in a company (excluding a specific user)
+   */
+  async invalidateAllCompanySessions(
+    companyId: number,
+    excludeUserId?: number,
+  ): Promise<number> {
+    // Use query builder to join with users table and filter by company
+    const queryBuilder = this.sessionsRepository
+      .createQueryBuilder('sessions')
+      .innerJoin('users', 'users', 'users.id = sessions.user_id')
+      .innerJoin('departments', 'dept', 'dept.id = users.department_id')
+      .where('dept.company_id = :companyId', { companyId })
+      .andWhere('sessions.is_valid = :isValid', { isValid: true });
+
+    if (excludeUserId) {
+      queryBuilder.andWhere('sessions.user_id != :excludeUserId', {
+        excludeUserId,
+      });
+    }
+
+    // Get the session IDs to update
+    const sessions = await queryBuilder
+      .select('sessions.id')
+      .getRawMany<{ sessions_id: number }>();
+    const sessionIds = sessions.map((s) => s.sessions_id);
+
+    if (sessionIds.length === 0) {
+      return 0;
+    }
+
+    // Update all matching sessions
+    const result = await this.sessionsRepository
+      .createQueryBuilder()
+      .update(Sessions)
+      .set({ isValid: false, updatedAt: new Date() })
+      .whereInIds(sessionIds)
+      .execute();
+
+    return result.affected || 0;
+  }
+
+  /**
    * Cron job: Runs every minute (FOR TESTING - change back to EVERY_DAY_AT_MIDNIGHT for production)
-   * Invalidates sessions that are older than 2 minutes from login time (FOR TESTING - change back to 12 hours)
+   * Invalidates sessions that are older than 30 minutes from login time (FOR TESTING - change back to 12 hours)
    */
   @Cron(CronExpression.EVERY_MINUTE)
   async handleExpiredSessions(): Promise<void> {
     this.logger.log('Running session expiry cron job...');
 
-    // FOR TESTING: 2 minutes ago (change back to 12 hours for production)
+    // FOR TESTING: 30 minutes ago (change back to 12 hours for production)
     // const twelveHoursAgo = new Date();
     // twelveHoursAgo.setHours(twelveHoursAgo.getHours() - 12);
 
-    const twoMinutesAgo = new Date();
-    twoMinutesAgo.setMinutes(twoMinutesAgo.getMinutes() - 2);
+    const expiryTime = new Date();
+    expiryTime.setMinutes(expiryTime.getMinutes() - 30);
 
+    // First, find sessions that will be expired (to notify them via WebSocket)
+    const sessionsToExpire = await this.sessionsRepository.find({
+      where: {
+        isValid: true,
+        loginAt: LessThan(expiryTime),
+      },
+      select: ['id'],
+    });
+
+    if (sessionsToExpire.length === 0) {
+      this.logger.log('No sessions to expire');
+      return;
+    }
+
+    const sessionIds = sessionsToExpire.map((s) => s.id);
+
+    // Emit session-expired events to connected clients BEFORE invalidating
+    const notifiedCount = this.notificationsGateway.emitSessionExpired(
+      sessionIds,
+      'expired',
+      'Your session has expired. Please log in again.',
+    );
+
+    // Now invalidate the sessions
     const result = await this.sessionsRepository.update(
       {
         isValid: true,
-        loginAt: LessThan(twoMinutesAgo),
+        loginAt: LessThan(expiryTime),
       },
       {
         isValid: false,
@@ -126,7 +190,7 @@ export class SessionsService {
     );
 
     this.logger.log(
-      `Expired ${result.affected || 0} sessions older than 2 minutes`,
+      `Expired ${result.affected || 0} sessions (notified ${notifiedCount} connected clients)`,
     );
   }
 
@@ -146,6 +210,75 @@ export class SessionsService {
     return this.sessionsRepository.find({
       where: { userId },
       order: { loginAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Get active (valid) sessions for a user
+   */
+  async getActiveUserSessions(userId: number): Promise<Sessions[]> {
+    return this.sessionsRepository.find({
+      where: { userId, isValid: true },
+      order: { loginAt: 'DESC' },
+    });
+  }
+
+  /**
+   * Get active sessions for multiple users
+   */
+  async getActiveSessionsForUsers(userIds: number[]): Promise<Sessions[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+
+    return this.sessionsRepository
+      .createQueryBuilder('sessions')
+      .where('sessions.user_id IN (:...userIds)', { userIds })
+      .andWhere('sessions.is_valid = :isValid', { isValid: true })
+      .orderBy('sessions.login_at', 'DESC')
+      .getMany();
+  }
+
+  /**
+   * Invalidate a specific session by ID
+   */
+  async invalidateSessionById(sessionId: number): Promise<Sessions | null> {
+    const session = await this.sessionsRepository.findOne({
+      where: { id: sessionId },
+    });
+
+    if (!session) {
+      return null;
+    }
+
+    await this.sessionsRepository.update(sessionId, {
+      isValid: false,
+      updatedAt: new Date(),
+    });
+
+    return session;
+  }
+
+  /**
+   * Get session by ID
+   */
+  async getSessionById(sessionId: number): Promise<Sessions | null> {
+    return this.sessionsRepository.findOne({
+      where: { id: sessionId },
+      relations: ['user'],
+    });
+  }
+
+  /**
+   * Update session with new refresh token hash
+   */
+  async updateSessionToken(
+    sessionId: number,
+    refreshToken: string,
+  ): Promise<void> {
+    await this.sessionsRepository.update(sessionId, {
+      refreshTokenHash: this.hashToken(refreshToken),
+      updatedAt: new Date(),
     });
   }
 }

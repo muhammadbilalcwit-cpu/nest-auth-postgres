@@ -10,10 +10,7 @@ import { Companies } from '../entities/entities/Companies';
 import { Departments } from '../entities/entities/Departments';
 import { Users } from '../entities/entities/Users';
 import type Redis from 'ioredis';
-import {
-  NotificationsGateway,
-  NotificationPayload,
-} from '../notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { AuthUser } from '../common/interfaces/auth-user.interface';
 
 @Injectable()
@@ -127,14 +124,15 @@ export class CompaniesService implements OnModuleInit {
 
     // Emit notification to company users (for new company, notify that company)
     if (performer) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId: company.id,
         type: 'company:created',
+        title: 'Company Created',
         message: `New company "${company.name}" has been created`,
-        data: company,
-        performedBy: { id: performer.id, email: performer.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(company.id, notification);
+        data: company as object,
+        actorId: performer.id,
+        actorEmail: performer.email,
+      });
     }
 
     return company;
@@ -228,14 +226,15 @@ export class CompaniesService implements OnModuleInit {
 
       // Emit notification to company users
       if (performer) {
-        const notification: NotificationPayload = {
+        void this.notificationsGateway.emitNotification({
+          companyId: id,
           type: 'company:updated',
+          title: 'Company Updated',
           message: `Company "${company.name}" has been updated`,
-          data: company,
-          performedBy: { id: performer.id, email: performer.email },
-          timestamp: new Date().toISOString(),
-        };
-        this.notificationsGateway.emitToCompany(id, notification);
+          data: company as object,
+          actorId: performer.id,
+          actorEmail: performer.email,
+        });
       }
     }
 
@@ -280,14 +279,15 @@ export class CompaniesService implements OnModuleInit {
 
     // Emit notification to company users before they disconnect
     if (performer) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId: id,
         type: 'company:deleted',
+        title: 'Company Deleted',
         message: `Company "${companyName}" has been deleted`,
         data: { id, name: companyName },
-        performedBy: { id: performer.id, email: performer.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(id, notification);
+        actorId: performer.id,
+        actorEmail: performer.email,
+      });
     }
 
     return { deleted: true };

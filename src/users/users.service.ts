@@ -16,10 +16,7 @@ import { AuthUser } from '../common/interfaces/auth-user.interface';
 import { UserRoles } from 'src/entities/entities/UserRoles';
 import { ActivityLogsService } from 'src/activity-logs/activity-logs.service';
 import { RequestContext } from 'src/common/interfaces/request-context.interface';
-import {
-  NotificationsGateway,
-  NotificationPayload,
-} from '../notifications/notifications.gateway';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 import { SessionsService } from '../sessions/sessions.service';
 
 @Injectable()
@@ -204,14 +201,15 @@ export class UserService {
     // Emit notification to company users
     // Option C: Use company from saved user directly (single source of truth)
     if (requester && toSave.company?.id) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId: toSave.company.id,
         type: 'user:created',
+        title: 'User Created',
         message: `New user "${savedUser.email}" has been created`,
         data: { id: savedUser.id, email: savedUser.email },
-        performedBy: { id: requester.id, email: requester.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(toSave.company.id, notification);
+        actorId: requester.id,
+        actorEmail: requester.email,
+      });
     }
 
     return savedUser;
@@ -547,14 +545,15 @@ export class UserService {
       const isSelfUpdate = requester.id === id;
       const companyId = updatedUser?.company?.id || existing.company?.id;
       if (companyId && !isSelfUpdate) {
-        const notification: NotificationPayload = {
+        void this.notificationsGateway.emitNotification({
+          companyId,
           type: 'user:updated',
+          title: 'User Updated',
           message: `User "${updatedUser?.email}" has been updated`,
           data: { id: updatedUser?.id, email: updatedUser?.email },
-          performedBy: { id: requester.id, email: requester.email },
-          timestamp: new Date().toISOString(),
-        };
-        this.notificationsGateway.emitToCompany(companyId, notification);
+          actorId: requester.id,
+          actorEmail: requester.email,
+        });
       }
 
       return updatedUser;
@@ -583,14 +582,15 @@ export class UserService {
 
     // Emit notification to company users
     if (companyId && performer) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId,
         type: 'user:deleted',
+        title: 'User Deleted',
         message: `User "${userEmail}" has been deleted`,
         data: { id, email: userEmail },
-        performedBy: { id: performer.id, email: performer.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(companyId, notification);
+        actorId: performer.id,
+        actorEmail: performer.email,
+      });
     }
 
     return result;
@@ -688,14 +688,15 @@ export class UserService {
     // Option C: Emit notification using user.company directly (single source of truth)
     const companyId = target.company?.id;
     if (companyId) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId,
         type: 'user:roles_assigned',
+        title: 'Roles Assigned',
         message: `Roles "${roleSlugs.join(', ')}" assigned to user "${target.email}"`,
         data: { userId, email: target.email, roles: roleSlugs },
-        performedBy: { id: requester.id, email: requester.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(companyId, notification);
+        actorId: requester.id,
+        actorEmail: requester.email,
+      });
     }
 
     return updatedUser;
@@ -761,14 +762,15 @@ export class UserService {
     // Option C: Emit notification using user.company directly (single source of truth)
     const companyId = target.company?.id;
     if (companyId) {
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId,
         type: 'user:role_removed',
+        title: 'Role Removed',
         message: `Role "${roleSlug}" removed from user "${target.email}"`,
         data: { userId, email: target.email, role: roleSlug },
-        performedBy: { id: requester.id, email: requester.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(companyId, notification);
+        actorId: requester.id,
+        actorEmail: requester.email,
+      });
     }
 
     return updatedUser;
@@ -878,14 +880,15 @@ export class UserService {
     const companyId = target.company?.id;
     if (companyId) {
       const statusText = isActive ? 'activated' : 'deactivated';
-      const notification: NotificationPayload = {
+      void this.notificationsGateway.emitNotification({
+        companyId,
         type: isActive ? 'user:activated' : 'user:deactivated',
+        title: isActive ? 'User Activated' : 'User Deactivated',
         message: `User "${target.email}" has been ${statusText}`,
         data: { userId, email: target.email, isActive },
-        performedBy: { id: requester.id, email: requester.email },
-        timestamp: new Date().toISOString(),
-      };
-      this.notificationsGateway.emitToCompany(companyId, notification);
+        actorId: requester.id,
+        actorEmail: requester.email,
+      });
     }
 
     return updatedUser;

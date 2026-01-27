@@ -100,3 +100,12 @@ nul
 
 # Prettier config (optional)
 .prettierrc
+
+# script files
+/scripts
+
+# doc files
+/docs
+
+# migration files
+/migrations

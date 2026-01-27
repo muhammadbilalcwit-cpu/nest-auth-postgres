@@ -3,23 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { ActivityLogs } from 'src/entities/entities/ActivityLogs';
 import { Repository } from 'typeorm';
 import { AuthUser } from 'src/common/interfaces/auth-user.interface';
+import { PaginationParams, PaginatedResult } from './interfaces';
 
-export interface PaginationParams {
-  page?: number;
-  limit?: number;
-  method?: string;
-  search?: string;
-}
-
-export interface PaginatedResult<T> {
-  data: T[];
-  meta: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-  };
-}
+// Re-export for backward compatibility
+export { PaginationParams, PaginatedResult } from './interfaces';
 
 @Injectable()
 export class ActivityLogsService {

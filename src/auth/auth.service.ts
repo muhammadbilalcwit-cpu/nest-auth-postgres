@@ -6,17 +6,7 @@ import { SignupDto } from './dto/signup.dto';
 import { LoginDto } from './dto/login.dto';
 import { RolesService } from '../roles/roles.service';
 import { SessionsService } from '../sessions/sessions.service';
-import { Users } from '../entities/entities/Users';
-
-interface UserWithRoles extends Users {
-  roles?: { id: number; name: string; slug: string }[];
-}
-
-interface UserRole {
-  role: {
-    slug: string;
-  };
-}
+import { UserWithRoles, UserRole } from './interfaces';
 
 @Injectable()
 export class AuthService {
@@ -48,7 +38,7 @@ export class AuthService {
     });
   }
 
-  private generateTokens(user: UserWithRoles) {
+  private generateTokens(user: UserWithRoles, sessionId?: number) {
     const userRoles = (user.userRoles || []) as UserRole[];
     const roles = [user.role?.slug, ...userRoles.map((r) => r.role.slug)]
       .filter((r): r is string => Boolean(r))
@@ -60,15 +50,16 @@ export class AuthService {
       companyId: user.company?.id ?? null,
       departmentId: user.department?.id ?? null,
       roles,
+      sessionId: sessionId ?? null,
     };
 
     const accessToken = this.jwtService.sign(payload, {
-      expiresIn: '1m', // FOR TESTING: 1 minute (change back to '15m' for production)
+      expiresIn: '15m', // FOR TESTING: 1 minute (change back to '15m' for production)
     });
 
     const refreshToken = this.jwtService.sign(
-      { sub: user.id },
-      { expiresIn: '3m' },
+      { sub: user.id, sessionId: sessionId ?? null },
+      { expiresIn: '1d' },
     );
 
     return { accessToken, refreshToken };
@@ -88,14 +79,27 @@ export class AuthService {
       );
     }
 
-    const tokens = this.generateTokens(user);
+    // Generate temporary refresh token for session creation
+    const tempRefreshToken = this.jwtService.sign(
+      { sub: user.id },
+      { expiresIn: '1d' },
+    );
 
-    // Create session in database
-    await this.sessionsService.createSession(
+    // Create session in database first to get sessionId
+    const session = await this.sessionsService.createSession(
       user.id,
-      tokens.refreshToken,
+      tempRefreshToken,
       ipAddress,
       userAgent,
+    );
+
+    // Generate tokens with sessionId included
+    const tokens = this.generateTokens(user, session.id);
+
+    // Update the session with the final refresh token hash
+    await this.sessionsService.updateSessionToken(
+      session.id,
+      tokens.refreshToken,
     );
 
     return tokens;
@@ -114,7 +118,8 @@ export class AuthService {
     const user = await this.usersService.findOne(userId);
     if (!user) throw new UnauthorizedException();
 
-    return this.generateTokens(user);
+    // Include sessionId in refreshed tokens
+    return this.generateTokens(user, session.id);
   }
 
   async logout(userId: number, refreshToken: string) {

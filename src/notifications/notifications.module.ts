@@ -1,9 +1,18 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { NotificationsGateway } from './notifications.gateway';
+import { NotificationsService } from './notifications.service';
+import { NotificationsController } from './notifications.controller';
+import { Companies } from '../entities/entities/Companies';
 import { Departments } from '../entities/entities/Departments';
+import { Notifications } from '../entities/entities/Notifications';
+import { UserNotifications } from '../entities/entities/UserNotifications';
+import { Users } from '../entities/entities/Users';
+import { Sessions } from '../entities/entities/Sessions';
+import { RedisModule } from '../redis/redis.module';
+import { SessionsModule } from '../sessions/sessions.module';
 
 @Module({
   imports: [
@@ -14,9 +23,19 @@ import { Departments } from '../entities/entities/Departments';
       }),
       inject: [ConfigService],
     }),
-    TypeOrmModule.forFeature([Departments]),
+    TypeOrmModule.forFeature([
+      Companies,
+      Departments,
+      Notifications,
+      UserNotifications,
+      Users,
+      Sessions,
+    ]),
+    RedisModule,
+    forwardRef(() => SessionsModule),
   ],
-  providers: [NotificationsGateway],
-  exports: [NotificationsGateway],
+  controllers: [NotificationsController],
+  providers: [NotificationsGateway, NotificationsService],
+  exports: [NotificationsGateway, NotificationsService],
 })
 export class NotificationsModule {}
