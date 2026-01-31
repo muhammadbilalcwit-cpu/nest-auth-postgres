@@ -109,3 +109,6 @@ nul
 
 # migration files
 /migrations
+
+# uploaded files
+/uploads

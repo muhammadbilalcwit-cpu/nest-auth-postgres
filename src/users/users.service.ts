@@ -8,6 +8,8 @@ import { Users } from '../entities/entities/Users';
 import { Departments } from '../entities/entities/Departments';
 import { Companies } from '../entities/entities/Companies';
 import { Repository } from 'typeorm';
+import * as fs from 'fs';
+import * as path from 'path';
 import { RolesService } from '../roles/roles.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { normalizeRoleSlug } from '../common/utils/roles';
@@ -109,6 +111,8 @@ export class UserService {
       const role = await this.rolesService.findBySlug(data.roleSlug);
       if (!role) throw new NotFoundException('Role not found');
       toSave.role = role;
+      // remove non-column property to avoid TypeORM error
+      delete (toSave as Partial<Users> & { roleSlug?: string }).roleSlug;
     }
 
     // Handle departmentId - for manager/user roles
@@ -228,20 +232,22 @@ export class UserService {
     let users: Users[] = [];
 
     if (requesterRoles.includes('super_admin')) {
-      // super_admin can see all users, optionally including inactive
-      const whereClause = includeInactive ? {} : { isActive: true };
-      users = await this.repo.find({
-        where: whereClause,
-        relations: [
-          'role',
-          'userRoles',
-          'userRoles.role',
-          'department',
-          'department.company',
-          'company',
-        ],
-        order: { id: 'ASC' },
-      });
+      // super_admin can see all users EXCEPT themselves (manage self via Settings)
+      const qb = this.repo
+        .createQueryBuilder('u')
+        .leftJoinAndSelect('u.role', 'primaryRole')
+        .leftJoinAndSelect('u.userRoles', 'ur')
+        .leftJoinAndSelect('ur.role', 'extraRole')
+        .leftJoinAndSelect('u.department', 'dept')
+        .leftJoinAndSelect('dept.company', 'deptCompany')
+        .leftJoinAndSelect('u.company', 'company')
+        .where('u.id != :requesterId', { requesterId: requester.id });
+
+      if (!includeInactive) {
+        qb.andWhere('u.is_active = :isActive', { isActive: true });
+      }
+
+      users = await qb.orderBy('u.id', 'ASC').getMany();
     } else if (requesterRoles.includes('company_admin')) {
       // Option C: Use companyId directly from requester (single source of truth)
       if (!requester.companyId) return [];
@@ -572,6 +578,11 @@ export class UserService {
   }
 
   async delete(id: number, performer?: AuthUser) {
+    // Prevent self-deletion
+    if (performer && performer.id === id) {
+      throw new ForbiddenException('Cannot delete your own account');
+    }
+
     // Get user before deleting to know their company
     const user = await this.findOne(id);
     // Option C: Use user.company directly (single source of truth)
@@ -787,6 +798,11 @@ export class UserService {
     isActive: boolean,
     ctx?: RequestContext,
   ): Promise<Users | null> {
+    // Prevent self-deactivation
+    if (requester.id === userId && !isActive) {
+      throw new ForbiddenException('Cannot deactivate your own account');
+    }
+
     const target = await this.findOne(userId);
     if (!target) throw new NotFoundException('User not found');
 
@@ -892,5 +908,74 @@ export class UserService {
     }
 
     return updatedUser;
+  }
+
+  /**
+   * Update user's profile picture
+   * @param userId - User ID
+   * @param filename - New profile picture filename (relative path)
+   * @returns Updated user
+   */
+  async updateProfilePicture(
+    userId: number,
+    filename: string,
+  ): Promise<Users | null> {
+    // Get raw user to access profilePicture field
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Delete old profile picture if exists
+    const oldPicture = user.profilePicture as string | null;
+    if (oldPicture) {
+      const relativePath = oldPicture.replace('/uploads/', '');
+      const oldFilePath = path.join(
+        __dirname,
+        '..',
+        '..',
+        'uploads',
+        relativePath,
+      );
+      if (fs.existsSync(oldFilePath)) {
+        fs.unlinkSync(oldFilePath);
+      }
+    }
+
+    // Update database with new profile picture path
+    const profilePicturePath = `/uploads/avatars/${filename}`;
+    await this.repo.update(userId, { profilePicture: profilePicturePath });
+
+    return this.findOne(userId);
+  }
+
+  /**
+   * Remove user's profile picture
+   * @param userId - User ID
+   * @returns Updated user
+   */
+  async removeProfilePicture(userId: number): Promise<Users | null> {
+    // Get raw user to access profilePicture field
+    const user = await this.repo.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    // Delete file if exists
+    const currentPicture = user.profilePicture as string | null;
+    if (currentPicture) {
+      const relativePath = currentPicture.replace('/uploads/', '');
+      const filePath = path.join(
+        __dirname,
+        '..',
+        '..',
+        'uploads',
+        relativePath,
+      );
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    // Clear profile picture in database
+    await this.repo.update(userId, { profilePicture: null });
+
+    return this.findOne(userId);
   }
 }

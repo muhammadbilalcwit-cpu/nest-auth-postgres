@@ -47,12 +47,14 @@ export class ActivityLogsService {
       queryBuilder.andWhere('log.companyId = :companyId', { companyId });
     }
 
-    // Filter by HTTP method
+    // Filter by HTTP method (case-insensitive)
     if (params.method) {
-      queryBuilder.andWhere('log.method = :method', { method: params.method });
+      queryBuilder.andWhere('UPPER(log.method) = UPPER(:method)', {
+        method: params.method,
+      });
     }
 
-    // Search in username, api, reason
+    // Search in username, api, reason (case-insensitive)
     if (params.search) {
       queryBuilder.andWhere(
         '(log.username ILIKE :search OR log.api ILIKE :search OR log.reason ILIKE :search)',

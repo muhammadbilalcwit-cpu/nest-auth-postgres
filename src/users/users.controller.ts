@@ -11,11 +11,21 @@ import {
   Put,
   Query,
   Req,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { AuthGuard } from '@nestjs/passport';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UserService } from './users.service';
+import { avatarUploadOptions } from './avatar-upload.config';
 import type { RequestWithUser } from '../common/interfaces/request-with-user.interface';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { CreateUserDto } from './dto/create-user.dto';
@@ -332,5 +342,65 @@ export class UserController {
       },
     );
     return ApiResponse.success('Profile updated successfully', 200, data);
+  }
+
+  /**
+   * Upload or update profile picture for the currently authenticated user.
+   *
+   * @param req - Authenticated request providing the current user.
+   * @param file - Uploaded image file.
+   * @returns API response with the updated user including new profile picture URL.
+   */
+  @UseGuards(AuthGuard('jwt'))
+  @Post('profile/avatar')
+  @ApiOperation({ summary: 'Upload profile picture' })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @UseInterceptors(FileInterceptor('file', avatarUploadOptions))
+  async uploadAvatar(
+    @Req() req: RequestWithUser,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    const data = await this.userService.updateProfilePicture(
+      req.user.id,
+      file.filename,
+    );
+    return ApiResponse.success(
+      'Profile picture uploaded successfully',
+      200,
+      data,
+    );
+  }
+
+  /**
+   * Remove profile picture for the currently authenticated user.
+   *
+   * @param req - Authenticated request providing the current user.
+   * @returns API response with the updated user.
+   */
+  @UseGuards(AuthGuard('jwt'))
+  @Delete('profile/avatar')
+  @ApiOperation({ summary: 'Remove profile picture' })
+  async removeAvatar(@Req() req: RequestWithUser) {
+    const data = await this.userService.removeProfilePicture(req.user.id);
+    return ApiResponse.success(
+      'Profile picture removed successfully',
+      200,
+      data,
+    );
   }
 }

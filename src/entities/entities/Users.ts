@@ -72,6 +72,13 @@ export class Users {
   @Column('timestamp without time zone', { name: 'deleted_at', nullable: true })
   deletedAt: Date | null;
 
+  @Column('character varying', {
+    name: 'profile_picture',
+    nullable: true,
+    length: 500,
+  })
+  profilePicture: string | null;
+
   @OneToMany(() => Sessions, (sessions) => sessions.user)
   sessions: Sessions[];
 

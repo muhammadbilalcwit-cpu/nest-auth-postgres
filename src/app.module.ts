@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
+import { join } from 'path';
 // import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ServeStaticModule } from '@nestjs/serve-static';
 import { UserModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { RolesModule } from './roles/roles.module';
@@ -28,6 +30,10 @@ import { SessionsModule } from './sessions/sessions.module';
       isGlobal: true, // <-- makes ConfigModule available everywhere
     }),
     ScheduleModule.forRoot(), // Enable cron jobs
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'uploads'),
+      serveRoot: '/uploads',
+    }),
     // PassportModule.register({ defaultStrategy: 'jwt' }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -41,7 +47,7 @@ import { SessionsModule } from './sessions/sessions.module';
         database: configService.get<string>('DB_NAME'),
         entities: [Users, Roles, UserRoles, Companies, Departments, Sessions],
         autoLoadEntities: true,
-        synchronize: false, // DB first
+        synchronize: false, // Temporarily enabled to recreate tables - change back to false after!
       }),
     }),
     RedisModule,

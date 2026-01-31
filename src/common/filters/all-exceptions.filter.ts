@@ -60,10 +60,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       `${request.method} ${request.url} ${status} - ${message} - raw: ${JSON.stringify(raw)}`,
     );
 
-    // Send minimal error response (only what should be exposed to clients)
+    // Send minimal error response (consistent with ApiResponse format)
     response.status(status).json({
       message,
-      statusCode: status,
+      status_code: status,
       data: null,
     });
   }
