@@ -36,7 +36,11 @@ export class Notifications {
   @Column('integer', { name: 'actor_id', nullable: true })
   actorId: number | null;
 
-  @Column('character varying', { name: 'actor_email', length: 255, nullable: true })
+  @Column('character varying', {
+    name: 'actor_email',
+    length: 255,
+    nullable: true,
+  })
   actorEmail: string | null;
 
   @Column('timestamp without time zone', {
@@ -53,6 +57,9 @@ export class Notifications {
   @JoinColumn([{ name: 'actor_id', referencedColumnName: 'id' }])
   actor: Users;
 
-  @OneToMany(() => UserNotifications, (userNotification) => userNotification.notification)
+  @OneToMany(
+    () => UserNotifications,
+    (userNotification) => userNotification.notification,
+  )
   userNotifications: UserNotifications[];
 }

@@ -12,7 +12,9 @@ import { Notifications } from './Notifications';
 
 @Index('user_notifications_pkey', ['id'], { unique: true })
 @Index('user_notifications_user_read', ['userId', 'isRead'])
-@Index('user_notifications_user_notification', ['userId', 'notificationId'], { unique: true })
+@Index('user_notifications_user_notification', ['userId', 'notificationId'], {
+  unique: true,
+})
 @Unique(['userId', 'notificationId'])
 @Entity('user_notifications', { schema: 'public' })
 export class UserNotifications {
@@ -41,7 +43,11 @@ export class UserNotifications {
   @JoinColumn([{ name: 'user_id', referencedColumnName: 'id' }])
   user: Users;
 
-  @ManyToOne(() => Notifications, (notification) => notification.userNotifications, { onDelete: 'CASCADE' })
+  @ManyToOne(
+    () => Notifications,
+    (notification) => notification.userNotifications,
+    { onDelete: 'CASCADE' },
+  )
   @JoinColumn([{ name: 'notification_id', referencedColumnName: 'id' }])
   notification: Notifications;
 }

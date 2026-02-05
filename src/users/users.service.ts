@@ -925,7 +925,7 @@ export class UserService {
     if (!user) throw new NotFoundException('User not found');
 
     // Delete old profile picture if exists
-    const oldPicture = user.profilePicture as string | null;
+    const oldPicture = user.profilePicture;
     if (oldPicture) {
       const relativePath = oldPicture.replace('/uploads/', '');
       const oldFilePath = path.join(
@@ -958,7 +958,7 @@ export class UserService {
     if (!user) throw new NotFoundException('User not found');
 
     // Delete file if exists
-    const currentPicture = user.profilePicture as string | null;
+    const currentPicture = user.profilePicture;
     if (currentPicture) {
       const relativePath = currentPicture.replace('/uploads/', '');
       const filePath = path.join(

@@ -36,6 +36,6 @@ import { SessionsModule } from '../sessions/sessions.module';
   ],
   controllers: [NotificationsController],
   providers: [NotificationsGateway, NotificationsService],
-  exports: [NotificationsGateway, NotificationsService],
+  exports: [NotificationsGateway, NotificationsService, JwtModule],
 })
 export class NotificationsModule {}

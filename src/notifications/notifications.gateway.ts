@@ -31,6 +31,9 @@ import {
   SessionExpiredPayload,
 } from './interfaces';
 
+/** Callback type for delivering pending messages when user connects */
+type UserConnectedCallback = (userId: number) => Promise<void>;
+
 // Re-export for backward compatibility
 export {
   NotificationPayload,
@@ -63,6 +66,17 @@ export class NotificationsGateway
   private socketSessionMap: Map<string, number> = new Map();
   // Map to track ALL socket IDs for a session (supports multiple tabs in same session)
   private sessionSocketsMap: Map<number, Set<string>> = new Map();
+
+  // Callback for delivering pending chat messages when user connects
+  private userConnectedCallback: UserConnectedCallback | null = null;
+
+  /**
+   * Register callback for when a user connects (first connection only)
+   * Used by ChatGateway to deliver pending messages
+   */
+  setUserConnectedCallback(callback: UserConnectedCallback): void {
+    this.userConnectedCallback = callback;
+  }
 
   constructor(
     private readonly jwtService: JwtService,
@@ -207,6 +221,11 @@ export class NotificationsGateway
           this.server
             .to('super_admins')
             .emit('user-status-changed', statusPayload);
+        }
+
+        // Deliver pending chat messages to user who just came online
+        if (this.userConnectedCallback) {
+          void this.userConnectedCallback(userId);
         }
       }
 
@@ -757,6 +776,23 @@ export class NotificationsGateway
   isSessionConnected(sessionId: number): boolean {
     const sockets = this.sessionSocketsMap.get(sessionId);
     return sockets !== undefined && sockets.size > 0;
+  }
+
+  /**
+   * Get user info (userId and companyId) from socket ID
+   * Used by ChatGateway to get user context for chat events
+   */
+  getSocketUserInfo(
+    socketId: string,
+  ): { userId: number; companyId: number } | null {
+    const userId = this.socketUserMap.get(socketId);
+    const companyId = this.socketCompanyMap.get(socketId);
+
+    if (userId === undefined || companyId === undefined) {
+      return null;
+    }
+
+    return { userId, companyId };
   }
 
   /**

@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { join } from 'path';
-// import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { MongooseModule } from '@nestjs/mongoose';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { UserModule } from './users/users.module';
@@ -10,7 +10,6 @@ import { AuthModule } from './auth/auth.module';
 import { RolesModule } from './roles/roles.module';
 import { CompaniesModule } from './companies/companies.module';
 import { DepartmentsModule } from './departments/departments.module';
-// import { PassportModule } from '@nestjs/passport';
 import { Users } from './entities/entities/Users';
 import { Roles } from './entities/entities/Roles';
 import { UserRoles } from './entities/entities/UserRoles';
@@ -22,24 +21,23 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { RedisModule } from './redis/redis.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SessionsModule } from './sessions/sessions.module';
-// import { WalModule } from './wal/wal.module'; // WAL disabled - wal2json not available on Windows
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
-      isGlobal: true, // <-- makes ConfigModule available everywhere
+      isGlobal: true,
     }),
-    ScheduleModule.forRoot(), // Enable cron jobs
+    ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'uploads'),
       serveRoot: '/uploads',
     }),
-    // PassportModule.register({ defaultStrategy: 'jwt' }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        type: 'postgres',
+        type: 'postgres' as const,
         host: configService.get<string>('DB_HOST'),
         port: configService.get<number>('DB_PORT'),
         username: configService.get<string>('DB_USER'),
@@ -47,27 +45,28 @@ import { SessionsModule } from './sessions/sessions.module';
         database: configService.get<string>('DB_NAME'),
         entities: [Users, Roles, UserRoles, Companies, Departments, Sessions],
         autoLoadEntities: true,
-        synchronize: false, // Temporarily enabled to recreate tables - change back to false after!
+        synchronize: false,
+      }),
+    }),
+    MongooseModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        uri: configService.get<string>('MONGODB_URI'),
       }),
     }),
     RedisModule,
     NotificationsModule,
-    SessionsModule, // Session tracking with cron job
-    // WalModule, // WAL disabled - wal2json not available on Windows
+    SessionsModule,
     AuthModule,
     UserModule,
     RolesModule,
     CompaniesModule,
     DepartmentsModule,
     ActivityLogsModule,
+    ChatModule,
   ],
   controllers: [],
-  providers: [
-    AppService,
-    // {
-    //   provide: APP_INTERCEPTOR,
-    //   useClass: CacheInterceptor,
-    // },
-  ],
+  providers: [AppService],
 })
 export class AppModule {}
