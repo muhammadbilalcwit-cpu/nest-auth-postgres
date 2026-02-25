@@ -46,7 +46,7 @@ export {
 @Injectable()
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: ['http://localhost:3000', 'http://localhost:3100'],
     credentials: true,
   },
 })
@@ -66,6 +66,8 @@ export class NotificationsGateway
   private socketSessionMap: Map<string, number> = new Map();
   // Map to track ALL socket IDs for a session (supports multiple tabs in same session)
   private sessionSocketsMap: Map<number, Set<string>> = new Map();
+  // Track super_admin user IDs (needed at disconnect time when JWT is unavailable)
+  private superAdminUserIds: Set<number> = new Set();
 
   // Callback for delivering pending chat messages when user connects
   private userConnectedCallback: UserConnectedCallback | null = null;
@@ -105,6 +107,38 @@ export class NotificationsGateway
     console.log(
       `WebSocket Gateway initialized with Redis Pub/Sub adapter (cleared ${clearedKeys} stale keys)`,
     );
+  }
+
+  /**
+   * Get all unique company room names from connected sockets.
+   * Used to broadcast super_admin status to every company.
+   */
+  private getAllCompanyRooms(): string[] {
+    const companyIds = new Set(this.socketCompanyMap.values());
+    return Array.from(companyIds).map((id) => `company:${id}`);
+  }
+
+  /**
+   * Emit an event to the right rooms based on whether the user is a super_admin.
+   * Super_admins broadcast to ALL company rooms; regular users only to their own.
+   */
+  private emitToUserRooms(
+    userId: number,
+    companyId: number,
+    event: string,
+    payload: unknown,
+  ): void {
+    if (this.superAdminUserIds.has(userId)) {
+      // Super_admin → emit to every company room so all company_admins see it
+      for (const room of this.getAllCompanyRooms()) {
+        this.server.to(room).emit(event, payload);
+      }
+    } else {
+      // Regular user → emit to their company room only
+      this.server.to(`company:${companyId}`).emit(event, payload);
+    }
+    // Always emit to super_admins room so other super_admins see it too
+    this.server.to('super_admins').emit(event, payload);
   }
 
   async handleConnection(client: Socket) {
@@ -192,6 +226,7 @@ export class NotificationsGateway
       // If user is super_admin, also join the super_admins room for cross-company updates
       if (payload.roles?.includes('super_admin')) {
         void client.join('super_admins');
+        this.superAdminUserIds.add(userId);
         console.log(
           `WebSocket: Super admin ${userId} joined super_admins room`,
         );
@@ -200,6 +235,11 @@ export class NotificationsGateway
       // Only mark user as online in Redis on FIRST connection
       if (isFirstConnection) {
         await this.notificationsService.markUserOnline(userId, companyId);
+
+        // Super_admin: also mark in global key so all companies see them
+        if (this.superAdminUserIds.has(userId)) {
+          await this.notificationsService.markSuperAdminOnline(userId);
+        }
 
         // Emit user-online event to company room for real-time status updates
         const user = await this.usersRepo.findOne({
@@ -216,11 +256,8 @@ export class NotificationsGateway
             isOnline: true,
             companyId,
           };
-          // Emit to company room and super_admins room
-          this.server.to(roomName).emit('user-status-changed', statusPayload);
-          this.server
-            .to('super_admins')
-            .emit('user-status-changed', statusPayload);
+          // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+          this.emitToUserRooms(userId, companyId, 'user-status-changed', statusPayload);
         }
 
         // Deliver pending chat messages to user who just came online
@@ -264,11 +301,8 @@ export class NotificationsGateway
                 companyId,
               };
 
-              // Emit to company room and super_admins for real-time session updates
-              this.server.to(roomName).emit('session-added', sessionPayload);
-              this.server
-                .to('super_admins')
-                .emit('session-added', sessionPayload);
+              // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+              this.emitToUserRooms(userId, companyId, 'session-added', sessionPayload);
               console.log(
                 `WebSocket: Emitted session-added for session ${sessionId} (user ${userId})`,
               );
@@ -329,14 +363,9 @@ export class NotificationsGateway
 
           // Emit session-removed event when session has no more connections
           if (userId && companyId) {
-            const roomName = `company:${companyId}`;
             const sessionRemovedPayload = { sessionId, userId, companyId };
-            this.server
-              .to(roomName)
-              .emit('session-removed', sessionRemovedPayload);
-            this.server
-              .to('super_admins')
-              .emit('session-removed', sessionRemovedPayload);
+            // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+            this.emitToUserRooms(userId, companyId, 'session-removed', sessionRemovedPayload);
             console.log(
               `WebSocket: Emitted session-removed for session ${sessionId} (user ${userId})`,
             );
@@ -371,12 +400,14 @@ export class NotificationsGateway
               isOnline: false,
               companyId,
             };
-            const roomName = `company:${companyId}`;
-            // Emit to company room and super_admins room
-            this.server.to(roomName).emit('user-status-changed', statusPayload);
-            this.server
-              .to('super_admins')
-              .emit('user-status-changed', statusPayload);
+            // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+            this.emitToUserRooms(userId, companyId, 'user-status-changed', statusPayload);
+          }
+
+          // Clean up super_admin tracking when fully disconnected
+          if (this.superAdminUserIds.has(userId)) {
+            await this.notificationsService.markSuperAdminOffline(userId);
+            this.superAdminUserIds.delete(userId);
           }
 
           console.log(
@@ -569,12 +600,14 @@ export class NotificationsGateway
           isOnline: false,
           companyId,
         };
-        const roomName = `company:${companyId}`;
-        // Emit to company room and super_admins room
-        this.server.to(roomName).emit('user-status-changed', statusPayload);
-        this.server
-          .to('super_admins')
-          .emit('user-status-changed', statusPayload);
+        // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+        this.emitToUserRooms(userId, companyId, 'user-status-changed', statusPayload);
+      }
+
+      // Clean up super_admin tracking
+      if (this.superAdminUserIds.has(userId)) {
+        await this.notificationsService.markSuperAdminOffline(userId);
+        this.superAdminUserIds.delete(userId);
       }
     }
 
@@ -634,11 +667,14 @@ export class NotificationsGateway
             isOnline: false,
             companyId,
           };
-          // Emit to company room and super_admins room
-          this.server.to(roomName).emit('user-status-changed', statusPayload);
-          this.server
-            .to('super_admins')
-            .emit('user-status-changed', statusPayload);
+          // Emit to relevant rooms (super_admins broadcast to ALL company rooms)
+          this.emitToUserRooms(userId, companyId, 'user-status-changed', statusPayload);
+        }
+
+        // Clean up super_admin tracking
+        if (this.superAdminUserIds.has(userId)) {
+          await this.notificationsService.markSuperAdminOffline(userId);
+          this.superAdminUserIds.delete(userId);
         }
       }
     }
@@ -711,12 +747,8 @@ export class NotificationsGateway
     this.sessionSocketsMap.delete(sessionId);
 
     // Emit session-removed event for real-time UI updates
-    const roomName = `company:${companyId}`;
     const sessionRemovedPayload = { sessionId, userId, companyId };
-    this.server.to(roomName).emit('session-removed', sessionRemovedPayload);
-    this.server
-      .to('super_admins')
-      .emit('session-removed', sessionRemovedPayload);
+    this.emitToUserRooms(userId, companyId, 'session-removed', sessionRemovedPayload);
 
     // Check if user still has other connections
     const remainingUserSockets = this.userSocketsMap.get(userId);
@@ -739,11 +771,13 @@ export class NotificationsGateway
           isOnline: false,
           companyId,
         };
-        const roomName = `company:${companyId}`;
-        this.server.to(roomName).emit('user-status-changed', statusPayload);
-        this.server
-          .to('super_admins')
-          .emit('user-status-changed', statusPayload);
+        this.emitToUserRooms(userId, companyId, 'user-status-changed', statusPayload);
+      }
+
+      // Clean up super_admin tracking
+      if (this.superAdminUserIds.has(userId)) {
+        await this.notificationsService.markSuperAdminOffline(userId);
+        this.superAdminUserIds.delete(userId);
       }
     }
 

@@ -68,19 +68,21 @@ export class AuthController {
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: true,
-      sameSite: 'strict',
+      secure: false,
+      sameSite: 'lax',
       maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
     });
 
     res.cookie('accessToken', accessToken, {
       httpOnly: true,
-      secure: true,
-      sameSite: 'strict',
+      secure: false,
+      sameSite: 'lax',
       maxAge: 15 * 60 * 1000, // 15 minutes
     });
 
-    return ApiResponse.success('Logged in successfully', 200, null);
+    res.setHeader('x-access-token', accessToken);
+
+    return ApiResponse.success('Logged in successfully', 200, { accessToken });
   }
 
   /**
@@ -122,11 +124,13 @@ export class AuthController {
       res.cookie('accessToken', accessToken, {
         httpOnly: true,
         secure: false,
-        sameSite: 'strict',
+        sameSite: 'lax',
         maxAge: 15 * 60 * 1000,
       });
 
-      return ApiResponse.success('Token refreshed', 200);
+      res.setHeader('x-access-token', accessToken);
+
+      return ApiResponse.success('Token refreshed', 200, { accessToken });
     } catch {
       // Session expired in database - clear cookies
       res.clearCookie('accessToken');

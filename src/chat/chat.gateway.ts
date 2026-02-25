@@ -121,7 +121,7 @@ function isValidSendMessage(data: unknown): data is ValidatedSendMessage {
  */
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: ['http://localhost:3000', 'http://localhost:3100'],
     credentials: true,
   },
 })
@@ -164,10 +164,48 @@ export class ChatGateway {
       this.emitMessageConfirmed(senderId, data);
     });
 
-    // Register callback to deliver pending messages when user comes online
-    this.notificationsGateway.setUserConnectedCallback((userId: number) =>
-      this.deliverPendingMessages(userId),
+    // Register callback for group message delivery (to all members + sender multi-device)
+    this.rabbitmqService.setGroupDeliveryCallback(
+      (
+        senderId: number,
+        participants: number[],
+        data: { message: unknown; conversation: unknown },
+      ) => {
+        // Emit to all members except sender
+        this.emitGroupMessage(participants, senderId, data);
+        // Emit to sender's sessions (multi-device sync)
+        const senderSocketIds =
+          this.notificationsGateway.getUserSocketIds(senderId);
+        for (const socketId of senderSocketIds) {
+          this.notificationsGateway.server
+            .to(socketId)
+            .emit('chat:group_message', data);
+        }
+      },
     );
+
+    // Register callback for group message delivered notification
+    this.rabbitmqService.setGroupDeliveredCallback(
+      (
+        senderId: number,
+        groupId: string,
+        messageId: string,
+        deliveredToUserId: number,
+      ) => {
+        this.emitGroupMessageDelivered(
+          senderId,
+          groupId,
+          messageId,
+          deliveredToUserId,
+        );
+      },
+    );
+
+    // NOTE: Pending message delivery is now handled by FastAPI chat microservice.
+    // Disabling NestJS delivery to prevent double-marking delivery status.
+    // this.notificationsGateway.setUserConnectedCallback((userId: number) =>
+    //   this.deliverPendingMessages(userId),
+    // );
 
     console.log('Chat Gateway initialized');
   }
@@ -314,57 +352,22 @@ export class ChatGateway {
         return { success: false, error: 'Not authenticated' };
       }
 
-      const { userId: senderId } = userInfo;
+      const { userId: senderId, companyId } = userInfo;
 
-      // Send group message via service (cast attachment type for compatibility)
-      const { message, conversation } = await this.chatService.sendGroupMessage(
+      // Queue group message to RabbitMQ (consumer will save, confirm, and deliver)
+      const published = await this.rabbitmqService.publishGroupMessage(
+        tempId,
         senderId,
         groupId,
         content,
-        attachment as Parameters<typeof this.chatService.sendGroupMessage>[3],
+        companyId,
+        attachment,
         mentions,
         mentionsAll,
       );
 
-      const messageId = (
-        message as unknown as { _id: { toString(): string } }
-      )._id.toString();
-      const conversationId = (
-        conversation as unknown as { _id: { toString(): string } }
-      )._id.toString();
-
-      // Confirm to sender with tempId → realId mapping
-      this.emitMessageConfirmed(senderId, {
-        tempId,
-        messageId,
-        conversationId,
-      });
-
-      // Emit to all group members (except sender)
-      this.emitGroupMessage(conversation.participants, senderId, {
-        message,
-        conversation,
-      });
-
-      // Mark as delivered for online members and notify sender
-      for (const participantId of conversation.participants) {
-        if (participantId === senderId) continue;
-
-        if (this.isUserOnline(participantId)) {
-          // Mark delivered for this user
-          await this.chatService.markGroupMessageDelivered(
-            messageId,
-            participantId,
-          );
-
-          // Notify sender
-          this.emitGroupMessageDelivered(
-            senderId,
-            groupId,
-            messageId,
-            participantId,
-          );
-        }
+      if (!published) {
+        return { success: false, error: 'Failed to queue group message' };
       }
 
       return { success: true };

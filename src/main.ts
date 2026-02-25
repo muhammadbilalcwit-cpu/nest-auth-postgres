@@ -21,8 +21,9 @@ async function bootstrap() {
 
   // REQUIRED for browser / swagger cookies
   app.enableCors({
-    origin: ['http://localhost:3000'],
+    origin: ['http://localhost:3000', 'http://localhost:3100'],
     credentials: true,
+    exposedHeaders: ['x-access-token'],
   });
 
   app.useGlobalPipes(

@@ -33,6 +33,9 @@ export class NotificationsService {
     return `online:company:${companyId}`;
   }
 
+  // Super_admin is global (not tied to any single company) — tracked separately
+  private readonly SUPER_ADMIN_ONLINE_KEY = 'online:super_admins';
+
   constructor(
     @InjectRepository(Notifications)
     private readonly notificationsRepo: Repository<Notifications>,
@@ -64,6 +67,33 @@ export class NotificationsService {
     const key = this.getOnlineUsersKey(companyId);
     await this.redisClient.srem(key, userId.toString());
     this.logger.log(`User ${userId} marked as offline in company ${companyId}`);
+  }
+
+  /**
+   * Mark super_admin as online (globally visible across all companies)
+   */
+  async markSuperAdminOnline(userId: number): Promise<void> {
+    await this.redisClient.sadd(this.SUPER_ADMIN_ONLINE_KEY, userId.toString());
+    this.logger.log(`Super admin ${userId} marked as globally online`);
+  }
+
+  /**
+   * Mark super_admin as offline
+   */
+  async markSuperAdminOffline(userId: number): Promise<void> {
+    await this.redisClient.srem(
+      this.SUPER_ADMIN_ONLINE_KEY,
+      userId.toString(),
+    );
+    this.logger.log(`Super admin ${userId} marked as globally offline`);
+  }
+
+  /**
+   * Get online super_admin user IDs (O(1) Redis check)
+   */
+  async getOnlineSuperAdminIds(): Promise<number[]> {
+    const ids = await this.redisClient.smembers(this.SUPER_ADMIN_ONLINE_KEY);
+    return ids.map((id) => parseInt(id, 10));
   }
 
   /**
@@ -336,7 +366,7 @@ export class NotificationsService {
    * Clear ALL online user data (used on server startup)
    */
   async clearAllOnlineUsers(): Promise<number> {
-    const keys = await this.redisClient.keys('online:company:*');
+    const keys = await this.redisClient.keys('online:*');
     if (keys.length > 0) {
       await this.redisClient.del(...keys);
       this.logger.log(`Cleared ${keys.length} online user keys on startup`);

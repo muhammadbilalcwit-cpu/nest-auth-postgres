@@ -44,6 +44,20 @@ interface ChatMessagePayload {
 }
 
 /**
+ * Group message payload structure for RabbitMQ
+ */
+interface GroupChatMessagePayload {
+  tempId: string;
+  senderId: number;
+  groupId: string;
+  content: string;
+  senderCompanyId: number;
+  attachment?: MessageAttachmentData;
+  mentions?: MessageMention[];
+  mentionsAll?: boolean;
+}
+
+/**
  * Callback type for delivering messages via WebSocket
  */
 type MessageDeliveryCallback = (
@@ -77,6 +91,25 @@ type MessageConfirmCallback = (
 ) => void;
 
 /**
+ * Callback type for delivering group messages to all members via WebSocket
+ */
+type GroupMessageDeliveryCallback = (
+  senderId: number,
+  participants: number[],
+  data: { message: unknown; conversation: unknown },
+) => void;
+
+/**
+ * Callback type for notifying sender when a group message is delivered to a member
+ */
+type GroupMessageDeliveredCallback = (
+  senderId: number,
+  groupId: string,
+  messageId: string,
+  deliveredToUserId: number,
+) => void;
+
+/**
  * RabbitMQ Service
  *
  * Enterprise Pattern: Queue-First for Reliability
@@ -95,12 +128,16 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
   private readonly queueName = 'chat.messages';
   private readonly dlqName = 'chat.messages.dlq';
   private readonly dlxName = 'chat.dlx';
+  private readonly groupQueueName = 'chat.group_messages';
+  private readonly groupDlqName = 'chat.group_messages.dlq';
   private readonly maxRetries = 3;
   private readonly reconnectDelay = 5000;
 
   private deliveryCallback: MessageDeliveryCallback | null = null;
   private statusUpdateCallback: StatusUpdateCallback | null = null;
   private messageConfirmCallback: MessageConfirmCallback | null = null;
+  private groupDeliveryCallback: GroupMessageDeliveryCallback | null = null;
+  private groupDeliveredCallback: GroupMessageDeliveredCallback | null = null;
 
   constructor(
     private configService: ConfigService,
@@ -142,6 +179,22 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
   setMessageConfirmCallback(callback: MessageConfirmCallback): void {
     this.messageConfirmCallback = callback;
     console.log('RabbitMQ: Message confirm callback registered');
+  }
+
+  /**
+   * Set the callback for delivering group messages to all members
+   */
+  setGroupDeliveryCallback(callback: GroupMessageDeliveryCallback): void {
+    this.groupDeliveryCallback = callback;
+    console.log('RabbitMQ: Group message delivery callback registered');
+  }
+
+  /**
+   * Set the callback for notifying sender of group message delivery
+   */
+  setGroupDeliveredCallback(callback: GroupMessageDeliveredCallback): void {
+    this.groupDeliveredCallback = callback;
+    console.log('RabbitMQ: Group message delivered callback registered');
   }
 
   /**
@@ -221,10 +274,31 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
         deadLetterRoutingKey: this.queueName,
       });
 
-      // Start consumer
-      await this.startConsumer();
+      // Setup Group Dead Letter Queue (reuse same DLX)
+      await this.channel.assertQueue(this.groupDlqName, {
+        durable: true,
+      });
+      await this.channel.bindQueue(
+        this.groupDlqName,
+        this.dlxName,
+        this.groupQueueName,
+      );
 
-      console.log('RabbitMQ connected successfully with DLQ');
+      // Setup group queue with DLX
+      await this.channel.assertQueue(this.groupQueueName, {
+        durable: true,
+        deadLetterExchange: this.dlxName,
+        deadLetterRoutingKey: this.groupQueueName,
+      });
+
+      // NOTE: Consumers are disabled because FastAPI chat microservice
+      // is now the sole consumer. Both services consuming the same queues
+      // causes RabbitMQ round-robin, losing ~50% of messages.
+      // NestJS still publishes to the queues; FastAPI consumes and delivers via its socket.
+      // await this.startConsumer();
+      // await this.startGroupConsumer();
+
+      console.log('RabbitMQ connected (publish-only, FastAPI consumes)');
 
       // Handle connection close - auto-reconnect
       conn.on('close', () => {
@@ -351,8 +425,9 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
         payload.senderCompanyId,
       );
 
+      const messageData = { message, conversation };
+
       if (isRecipientOnline && this.deliveryCallback) {
-        const messageData = { message, conversation };
         console.log(
           `RabbitMQ: User ${payload.recipientId} is online, delivering via WebSocket`,
         );
@@ -376,6 +451,14 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
         console.log(
           `RabbitMQ: User ${payload.recipientId} is offline, message saved to MongoDB`,
         );
+      }
+
+      // Step 4: Deliver to sender's other sessions (multi-device sync)
+      // The session that sent the message has the optimistic update + confirmation.
+      // Other sessions need the full message via chat:receive.
+      // Duplicate prevention is handled on the frontend via processedMessageIds.
+      if (this.deliveryCallback) {
+        this.deliveryCallback(payload.senderId, messageData);
       }
 
       // Success - acknowledge
@@ -414,7 +497,11 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
   /**
    * Republish message with incremented retry count
    */
-  private republishWithRetry(msg: ConsumeMessage, retryCount: number): void {
+  private republishWithRetry(
+    msg: ConsumeMessage,
+    retryCount: number,
+    targetQueue?: string,
+  ): void {
     if (!this.channel) return;
 
     const headers = {
@@ -422,7 +509,7 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
       'x-retry-count': retryCount,
     };
 
-    this.channel.sendToQueue(this.queueName, msg.content, {
+    this.channel.sendToQueue(targetQueue || this.queueName, msg.content, {
       persistent: true,
       contentType: 'application/json',
       headers,
@@ -440,6 +527,133 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
     const key = `online:company:${companyId}`;
     const result = await this.redisClient.sismember(key, userId.toString());
     return result === 1;
+  }
+
+  /**
+   * Start the group message consumer
+   */
+  private async startGroupConsumer(): Promise<void> {
+    if (!this.channel) {
+      console.warn('RabbitMQ channel not available for group consumer');
+      return;
+    }
+
+    await this.channel.consume(
+      this.groupQueueName,
+      (msg) => {
+        if (!msg) return;
+        void this.processGroupMessage(msg);
+      },
+      { noAck: false },
+    );
+
+    console.log('RabbitMQ: Group message consumer started');
+  }
+
+  /**
+   * Process a group message with retry logic
+   * Saves to MongoDB, delivers to all members, and confirms to sender
+   */
+  private async processGroupMessage(msg: ConsumeMessage): Promise<void> {
+    const retryCount = this.getRetryCount(msg);
+
+    try {
+      const payload = JSON.parse(
+        msg.content.toString(),
+      ) as GroupChatMessagePayload;
+
+      console.log(
+        `RabbitMQ: Processing group message from ${payload.senderId} to ` +
+          `group ${payload.groupId} (attempt ${retryCount + 1}/${this.maxRetries})`,
+      );
+
+      // Step 1: Save to MongoDB
+      const { message, conversation } = await this.chatService.sendGroupMessage(
+        payload.senderId,
+        payload.groupId,
+        payload.content,
+        payload.attachment as Parameters<
+          typeof this.chatService.sendGroupMessage
+        >[3],
+        payload.mentions,
+        payload.mentionsAll,
+      );
+
+      const messageId = (
+        message as unknown as { _id: { toString(): string } }
+      )._id.toString();
+      const conversationId = (
+        conversation as unknown as { _id: { toString(): string } }
+      )._id.toString();
+
+      // Step 2: Confirm to sender (map tempId → realId) — reuse existing callback
+      if (this.messageConfirmCallback) {
+        this.messageConfirmCallback(payload.senderId, {
+          tempId: payload.tempId,
+          messageId,
+          conversationId,
+        });
+        console.log(
+          `RabbitMQ: Confirmed group message ${payload.tempId} → ${messageId} to sender`,
+        );
+      }
+
+      // Step 3: Deliver to all group members + sender (multi-device sync)
+      if (this.groupDeliveryCallback) {
+        this.groupDeliveryCallback(
+          payload.senderId,
+          conversation.participants,
+          { message, conversation },
+        );
+      }
+
+      // Step 4: Mark as delivered for online members and notify sender
+      for (const participantId of conversation.participants) {
+        if (participantId === payload.senderId) continue;
+
+        const isOnline = await this.isUserOnline(
+          participantId,
+          payload.senderCompanyId,
+        );
+
+        if (isOnline) {
+          await this.chatService.markGroupMessageDelivered(
+            messageId,
+            participantId,
+          );
+
+          if (this.groupDeliveredCallback) {
+            this.groupDeliveredCallback(
+              payload.senderId,
+              payload.groupId,
+              messageId,
+              participantId,
+            );
+          }
+        }
+      }
+
+      // Success - acknowledge
+      this.channel?.ack(msg);
+    } catch (error) {
+      console.error(
+        `RabbitMQ: Error processing group message (attempt ${retryCount + 1}):`,
+        error,
+      );
+
+      if (retryCount < this.maxRetries - 1) {
+        console.log(
+          `RabbitMQ: Retrying group message (${retryCount + 2}/${this.maxRetries})`,
+        );
+        this.republishWithRetry(msg, retryCount + 1, this.groupQueueName);
+        this.channel?.ack(msg);
+      } else {
+        console.error(
+          `RabbitMQ: Max retries (${this.maxRetries}) reached for group message, sending to DLQ`,
+        );
+        this.channel?.nack(msg, false, false);
+      }
+    }
   }
 
   /**
@@ -491,6 +705,58 @@ export class RabbitmqService implements OnModuleInit, OnModuleDestroy {
       return true;
     } catch (error) {
       console.error('RabbitMQ: Failed to publish message:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Publish a group message with guaranteed delivery
+   */
+  async publishGroupMessage(
+    tempId: string,
+    senderId: number,
+    groupId: string,
+    content: string,
+    senderCompanyId: number,
+    attachment?: MessageAttachmentData,
+    mentions?: MessageMention[],
+    mentionsAll?: boolean,
+  ): Promise<boolean> {
+    if (!this.channel) {
+      console.warn('RabbitMQ channel not available');
+      return false;
+    }
+
+    const payload: GroupChatMessagePayload = {
+      tempId,
+      senderId,
+      groupId,
+      content,
+      senderCompanyId,
+      attachment,
+      mentions,
+      mentionsAll,
+    };
+
+    try {
+      this.channel.sendToQueue(
+        this.groupQueueName,
+        Buffer.from(JSON.stringify(payload)),
+        {
+          persistent: true,
+          contentType: 'application/json',
+          headers: { 'x-retry-count': 0 },
+        },
+      );
+
+      await this.channel.waitForConfirms();
+
+      console.log(
+        `RabbitMQ: Group message ${tempId} published from ${senderId} to group ${groupId}`,
+      );
+      return true;
+    } catch (error) {
+      console.error('RabbitMQ: Failed to publish group message:', error);
       return false;
     }
   }
